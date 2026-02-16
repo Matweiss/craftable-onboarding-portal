@@ -139,3 +139,4 @@ craftable-onboarding/
 - Supabase Free: 500MB database, 50k monthly active users
 - Vercel Free: 100GB bandwidth
 - No paid services required
+// Trigger redeploy
