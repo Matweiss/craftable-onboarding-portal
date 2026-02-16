@@ -1,78 +1,71 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
 export default function LoginPage() {
-  const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
   const [message, setMessage] = useState('')
-  const [debug, setDebug] = useState('')
 
-  // Check if already logged in (only once)
+  // Check if already logged in and redirect automatically
   useEffect(() => {
-    const checkSession = async () => {
+    const checkSessionAndRedirect = async () => {
       const { data: { session } } = await supabase.auth.getSession()
       if (session) {
-        setDebug(`Session found: ${session.user.email}. Click a button below to continue.`)
+        await redirectBasedOnRole(session.user.email!)
       }
       setChecking(false)
     }
-    checkSession()
+    checkSessionAndRedirect()
   }, [])
 
-  const goToAdmin = () => {
-    window.location.href = '/admin'
-  }
+  const redirectBasedOnRole = async (userEmail: string) => {
+    const { data: adminData } = await supabase
+      .from('admin_users')
+      .select('*')
+      .eq('email', userEmail.toLowerCase())
+      .single()
 
-  const goToDashboard = () => {
-    window.location.href = '/dashboard'
-  }
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-    setDebug('')
-    setMessage('Logged out successfully')
+    if (adminData) {
+      window.location.href = '/admin'
+    } else {
+      window.location.href = '/dashboard'
+    }
   }
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setMessage('')
-    setDebug('')
 
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
-        password,
-      })
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    })
 
-      if (error) {
-        setMessage(error.message)
-        setDebug(`Auth error: ${error.message}`)
-        setLoading(false)
-        return
-      }
-
-      if (data.session) {
-        setDebug(`Login successful! User: ${data.session.user.email}. Click a button below to continue.`)
-        setMessage('Login successful!')
-      }
-    } catch (err) {
-      setMessage('Unexpected error')
-      setDebug(`Catch: ${err}`)
+    if (error) {
+      setMessage(error.message)
+      setLoading(false)
+      return
     }
-    setLoading(false)
+
+    if (data.session) {
+      setMessage('Login successful! Redirecting...')
+      await redirectBasedOnRole(data.session.user.email!)
+    }
   }
 
+  // Show loading while checking session
   if (checking) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-900 to-blue-600">
-        <div className="text-white">Checking session...</div>
+        <div className="text-center text-white">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto"></div>
+          <p className="mt-4">Checking session...</p>
+        </div>
       </div>
     )
   }
@@ -85,115 +78,57 @@ export default function LoginPage() {
           <p className="text-gray-500 mt-2">Onboarding Portal</p>
         </div>
 
-        {debug && debug.includes('Session found') ? (
-          // Already logged in - show navigation options
-          <div className="space-y-4">
-            <div className="p-4 bg-green-50 border border-green-200 rounded-lg text-center">
-              <p className="text-green-800 font-medium">You are logged in!</p>
-              <p className="text-green-600 text-sm mt-1">{debug}</p>
-            </div>
-            
-            <button
-              onClick={goToAdmin}
-              className="w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 transition-all"
-            >
-              Go to Admin Dashboard
-            </button>
-            
-            <button
-              onClick={goToDashboard}
-              className="w-full bg-blue-500 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-600 transition-all"
-            >
-              Go to Customer Dashboard
-            </button>
-            
-            <button
-              onClick={handleLogout}
-              className="w-full bg-gray-200 text-gray-700 py-3 px-4 rounded-lg font-medium hover:bg-gray-300 transition-all"
-            >
-              Sign Out
-            </button>
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Email Address
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@restaurant.com"
+              required
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
           </div>
-        ) : (
-          // Not logged in - show login form
-          <>
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@restaurant.com"
-                  required
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  required
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Password
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              required
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-blue-500 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-600 transition-all disabled:opacity-50"
-              >
-                {loading ? 'Signing in...' : 'Sign In'}
-              </button>
-            </form>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-500 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-600 transition-all disabled:opacity-50"
+          >
+            {loading ? 'Signing in...' : 'Sign In'}
+          </button>
+        </form>
 
-            {message && (
-              <div className={`mt-4 p-4 rounded-lg text-center text-sm ${message.includes('successful') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                {message}
-              </div>
-            )}
-
-            {debug && !debug.includes('Session found') && (
-              <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800 break-all">
-                <strong>Debug:</strong> {debug}
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Show navigation buttons after successful login */}
-        {debug && debug.includes('Login successful') && (
-          <div className="mt-4 space-y-2">
-            <button
-              onClick={goToAdmin}
-              className="w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 transition-all"
-            >
-              Go to Admin Dashboard
-            </button>
-            
-            <button
-              onClick={goToDashboard}
-              className="w-full bg-blue-500 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-600 transition-all"
-            >
-              Go to Customer Dashboard
-            </button>
+        {message && (
+          <div className={`mt-4 p-4 rounded-lg text-center text-sm ${
+            message.includes('successful') || message.includes('Redirecting') 
+              ? 'bg-green-50 text-green-700' 
+              : 'bg-red-50 text-red-700'
+          }`}>
+            {message}
           </div>
         )}
 
-        <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-          <p className="text-xs font-medium text-gray-500 mb-2">Test Accounts:</p>
-          <p className="text-xs text-gray-400">Admin: mat@craftable.com</p>
-          <p className="text-xs text-gray-400">Customer: owner@usburgershack.com</p>
-          <p className="text-xs text-gray-400">Password: test1234</p>
-        </div>
+        <p className="mt-6 text-center text-sm text-gray-500">
+          Enter your credentials to access your onboarding portal.
+        </p>
       </div>
     </div>
   )
