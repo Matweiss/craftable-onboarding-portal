@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --craftable-blue: #0077B5;
+  --craftable-navy: #1E3A5F;
+  --craftable-green: #3AAA35;
+  --craftable-orange: #F7941D;
+  --craftable-coral: #FF6B6B;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+}
+
+/* Custom checkbox styling */
+.task-checkbox {
+  @apply w-5 h-5 rounded border-2 border-gray-300 cursor-pointer transition-all;
+}
+
+.task-checkbox:checked {
+  @apply bg-craftable-green border-craftable-green;
+}
+
+/* Progress bar animation */
+.progress-bar {
+  transition: width 0.5s ease-in-out;
+}
+
+/* Phase card styling */
+.phase-card {
+  @apply bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden;
+}
+
+.phase-header {
+  @apply px-4 py-3 font-semibold text-white;
+}
+
+.phase-0 .phase-header { @apply bg-gray-500; }
+.phase-1 .phase-header { @apply bg-craftable-blue; }
+.phase-2 .phase-header { @apply bg-craftable-orange; }
+.phase-3 .phase-header { @apply bg-craftable-green; }
+.phase-4 .phase-header { @apply bg-craftable-navy; }
