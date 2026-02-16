@@ -1,64 +1,87 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
 export default function AuthCallback() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const handleAuthCallback = async () => {
-      // Get the auth code from URL
       const code = searchParams.get('code')
       
       if (code) {
-        // Exchange the code for a session
-        const { error } = await supabase.auth.exchangeCodeForSession(code)
+        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
         
-        if (error) {
-          console.error('Auth exchange error:', error)
-          router.push('/')
+        if (exchangeError) {
+          console.error('Auth exchange error:', exchangeError)
+          setError(exchangeError.message)
           return
         }
       }
 
-      // Now get the session
+      // Get session after exchange
       const { data: { session }, error: sessionError } = await supabase.auth.getSession()
       
       if (sessionError) {
         console.error('Session error:', sessionError)
-        router.push('/')
+        setError(sessionError.message)
         return
       }
 
-      if (session) {
+      if (session?.user?.email) {
         // Check if user is admin
-        const { data: adminData } = await supabase
+        const { data: adminData, error: adminError } = await supabase
           .from('admin_users')
           .select('*')
           .eq('email', session.user.email)
-          .single()
+          .maybeSingle()
 
+        if (adminError) {
+          console.error('Admin check error:', adminError)
+        }
+
+        // Refresh router cache before redirect
+        router.refresh()
+        
         if (adminData) {
-          router.push('/admin')
+          window.location.href = '/admin'
         } else {
-          router.push('/dashboard')
+          window.location.href = '/dashboard'
         }
       } else {
-        router.push('/')
+        setError('No session found after authentication')
       }
     }
 
     handleAuthCallback()
   }, [router, searchParams])
 
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center p-8 bg-white rounded-lg shadow-lg">
+          <h1 className="text-red-600 text-xl font-bold mb-4">Authentication Error</h1>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <button 
+            onClick={() => router.push('/')}
+            className="bg-craftable-blue text-white px-4 py-2 rounded hover:opacity-90"
+          >
+            Back to Login
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-craftable-blue mx-auto"></div>
-        <p className="mt-4 text-gray-600">Signing you in...</p>
+        <p className="mt-4 text-gray-600">Completing sign in...</p>
       </div>
     </div>
   )
