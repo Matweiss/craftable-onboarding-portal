@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
@@ -10,35 +10,79 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+  const [debug, setDebug] = useState('')
+
+  // Check if already logged in
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) {
+        setDebug(`Already logged in as: ${session.user.email}`)
+        // Check if admin
+        const { data: adminData } = await supabase
+          .from('admin_users')
+          .select('*')
+          .eq('email', session.user.email)
+          .single()
+        
+        if (adminData) {
+          window.location.href = '/admin'
+        } else {
+          window.location.href = '/dashboard'
+        }
+      }
+    }
+    checkSession()
+  }, [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setMessage('')
+    setDebug('')
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
+    try {
+      setDebug('Attempting login...')
+      
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      })
 
-    if (error) {
-      setMessage(error.message)
-      setLoading(false)
-      return
-    }
-
-    if (data.session) {
-      const { data: adminData } = await supabase
-        .from('admin_users')
-        .select('*')
-        .eq('email', email.toLowerCase())
-        .single()
-
-      if (adminData) {
-        router.push('/admin')
-      } else {
-        router.push('/dashboard')
+      if (error) {
+        setMessage(error.message)
+        setDebug(`Auth error: ${JSON.stringify(error)}`)
+        setLoading(false)
+        return
       }
+
+      if (data.session) {
+        setDebug(`Login successful! User: ${data.session.user.email}`)
+        
+        // Check if admin
+        const { data: adminData, error: adminError } = await supabase
+          .from('admin_users')
+          .select('*')
+          .eq('email', email.trim().toLowerCase())
+          .single()
+
+        setDebug(prev => prev + ` | Admin check: ${adminData ? 'IS ADMIN' : 'NOT ADMIN'} | Error: ${adminError?.message || 'none'}`)
+
+        // Use window.location for hard redirect (ensures session is saved)
+        if (adminData) {
+          setDebug(prev => prev + ' | Redirecting to /admin...')
+          window.location.href = '/admin'
+        } else {
+          setDebug(prev => prev + ' | Redirecting to /dashboard...')
+          window.location.href = '/dashboard'
+        }
+      } else {
+        setMessage('Login failed - no session created')
+        setDebug('No session in response')
+      }
+    } catch (err) {
+      setMessage('Unexpected error')
+      setDebug(`Catch: ${err}`)
     }
     setLoading(false)
   }
@@ -92,6 +136,12 @@ export default function LoginPage() {
         {message && (
           <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-lg text-center text-sm">
             {message}
+          </div>
+        )}
+
+        {debug && (
+          <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800 break-all">
+            <strong>Debug:</strong> {debug}
           </div>
         )}
 
