@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase, Customer, Task, CustomerProgress } from '@/lib/supabase'
+import { supabase, Customer, Task } from '@/lib/supabase'
 import { Users, CheckCircle2, Clock, AlertTriangle, ChevronRight, LogOut, Plus, Search } from 'lucide-react'
 
 interface CustomerWithProgress extends Customer {
@@ -19,6 +19,7 @@ export default function AdminDashboard() {
   const [customers, setCustomers] = useState<CustomerWithProgress[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [filterPhase, setFilterPhase] = useState<number | 'all'>('all')
   const [showAddModal, setShowAddModal] = useState(false)
@@ -29,34 +30,59 @@ export default function AdminDashboard() {
   }, [])
 
   const checkAdminAndLoadData = async () => {
-    const { data: { session } } = await supabase.auth.getSession()
-    
-    if (!session) {
-      router.push('/')
-      return
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      
+      if (sessionError) {
+        setError(`Session error: ${sessionError.message}`)
+        setLoading(false)
+        return
+      }
+
+      if (!session) {
+        setError('No session found. Redirecting to login...')
+        setTimeout(() => router.push('/'), 2000)
+        return
+      }
+
+      // Verify admin status
+      const { data: adminData, error: adminError } = await supabase
+        .from('admin_users')
+        .select('*')
+        .eq('email', session.user.email)
+        .single()
+
+      if (adminError) {
+        setError(`Admin check error: ${adminError.message}. You may not have admin access.`)
+        setLoading(false)
+        return
+      }
+
+      if (!adminData) {
+        setError(`Not an admin user: ${session.user.email}. Redirecting to customer dashboard...`)
+        setTimeout(() => router.push('/dashboard'), 2000)
+        return
+      }
+
+      await loadData()
+    } catch (err) {
+      setError(`Unexpected error: ${err}`)
+      setLoading(false)
     }
-
-    // Verify admin status
-    const { data: adminData, error: adminError } = await supabase
-      .from('admin_users')
-      .select('*')
-      .eq('email', session.user.email)
-      .single()
-
-    if (adminError || !adminData) {
-      router.push('/dashboard')
-      return
-    }
-
-    await loadData()
   }
 
   const loadData = async () => {
     // Get all customers
-    const { data: customersData } = await supabase
+    const { data: customersData, error: customersError } = await supabase
       .from('customers')
       .select('*')
       .order('created_at', { ascending: false })
+
+    if (customersError) {
+      setError(`Failed to load customers: ${customersError.message}`)
+      setLoading(false)
+      return
+    }
 
     // Get all tasks
     const { data: tasksData } = await supabase
@@ -138,9 +164,9 @@ export default function AdminDashboard() {
   }
 
   const getProgressColor = (percentage: number) => {
-    if (percentage === 100) return 'bg-craftable-green'
-    if (percentage >= 60) return 'bg-craftable-blue'
-    if (percentage >= 30) return 'bg-craftable-orange'
+    if (percentage === 100) return 'bg-green-500'
+    if (percentage >= 60) return 'bg-blue-500'
+    if (percentage >= 30) return 'bg-orange-500'
     return 'bg-gray-300'
   }
 
@@ -159,7 +185,28 @@ export default function AdminDashboard() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-craftable-blue"></div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading admin dashboard...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="bg-white p-8 rounded-lg shadow-lg max-w-md text-center">
+          <div className="text-red-500 text-5xl mb-4">⚠️</div>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Admin Dashboard Error</h2>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <button
+            onClick={() => router.push('/')}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+          >
+            Back to Login
+          </button>
+        </div>
       </div>
     )
   }
@@ -167,7 +214,7 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-craftable-navy text-white">
+      <header className="bg-indigo-900 text-white">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">craftable</h1>
@@ -189,7 +236,7 @@ export default function AdminDashboard() {
           <div className="bg-white rounded-xl shadow-sm border p-6">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-blue-100 rounded-lg">
-                <Users className="w-6 h-6 text-craftable-blue" />
+                <Users className="w-6 h-6 text-blue-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
@@ -201,7 +248,7 @@ export default function AdminDashboard() {
           <div className="bg-white rounded-xl shadow-sm border p-6">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-orange-100 rounded-lg">
-                <Clock className="w-6 h-6 text-craftable-orange" />
+                <Clock className="w-6 h-6 text-orange-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-gray-900">{stats.active}</p>
@@ -213,7 +260,7 @@ export default function AdminDashboard() {
           <div className="bg-white rounded-xl shadow-sm border p-6">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-green-100 rounded-lg">
-                <CheckCircle2 className="w-6 h-6 text-craftable-green" />
+                <CheckCircle2 className="w-6 h-6 text-green-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-gray-900">{stats.completed}</p>
@@ -225,7 +272,7 @@ export default function AdminDashboard() {
           <div className="bg-white rounded-xl shadow-sm border p-6">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-red-100 rounded-lg">
-                <AlertTriangle className="w-6 h-6 text-craftable-coral" />
+                <AlertTriangle className="w-6 h-6 text-red-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-gray-900">{stats.stuck}</p>
@@ -244,14 +291,14 @@ export default function AdminDashboard() {
               placeholder="Search customers..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-craftable-blue focus:border-transparent"
+              className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
 
           <select
             value={filterPhase === 'all' ? 'all' : filterPhase}
             onChange={(e) => setFilterPhase(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
-            className="px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-craftable-blue"
+            className="px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500"
           >
             <option value="all">All Phases</option>
             <option value="0">Phase 0</option>
@@ -263,7 +310,7 @@ export default function AdminDashboard() {
 
           <button
             onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-6 py-3 bg-craftable-blue text-white rounded-lg hover:bg-opacity-90 transition-all"
+            className="flex items-center gap-2 px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all"
           >
             <Plus size={20} />
             Add Customer
@@ -311,7 +358,7 @@ export default function AdminDashboard() {
                     <span className={`text-sm ${
                       customer.progress.lastActivity && 
                       (Date.now() - new Date(customer.progress.lastActivity).getTime()) / (1000 * 60 * 60 * 24) > 7
-                        ? 'text-craftable-coral font-medium'
+                        ? 'text-red-500 font-medium'
                         : 'text-gray-500'
                     }`}>
                       {formatDate(customer.progress.lastActivity)}
@@ -321,7 +368,7 @@ export default function AdminDashboard() {
                     <span className="text-sm text-gray-700">{customer.assigned_om}</span>
                   </td>
                   <td className="px-6 py-4">
-                    <button className="p-2 text-gray-400 hover:text-craftable-blue hover:bg-blue-50 rounded-lg transition-all">
+                    <button className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-all">
                       <ChevronRight size={20} />
                     </button>
                   </td>
@@ -354,7 +401,7 @@ export default function AdminDashboard() {
                   required
                   value={newCustomer.name}
                   onChange={(e) => setNewCustomer({ ...newCustomer, name: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-craftable-blue"
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500"
                   placeholder="US Burger Shack"
                 />
               </div>
@@ -368,7 +415,7 @@ export default function AdminDashboard() {
                   required
                   value={newCustomer.email}
                   onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-craftable-blue"
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500"
                   placeholder="owner@restaurant.com"
                 />
               </div>
@@ -381,7 +428,7 @@ export default function AdminDashboard() {
                   type="text"
                   value={newCustomer.company}
                   onChange={(e) => setNewCustomer({ ...newCustomer, company: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-craftable-blue"
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500"
                   placeholder="US Burger Shack LLC"
                 />
               </div>
@@ -396,7 +443,7 @@ export default function AdminDashboard() {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 px-4 py-2 bg-craftable-blue text-white rounded-lg hover:bg-opacity-90 transition-all"
+                  className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all"
                 >
                   Add Customer
                 </button>
