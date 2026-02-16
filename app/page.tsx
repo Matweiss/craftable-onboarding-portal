@@ -12,36 +12,56 @@ export default function LoginPage() {
   const [message, setMessage] = useState('')
   const [isSuccess, setIsSuccess] = useState(false)
   const [usePassword, setUsePassword] = useState(true)
+  const [debugInfo, setDebugInfo] = useState('')
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setMessage('')
+    setDebugInfo('')
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
 
-    if (error) {
-      setMessage(error.message)
-      setIsSuccess(false)
-      setLoading(false)
-      return
-    }
-
-    if (data.session) {
-      const { data: adminData } = await supabase
-        .from('admin_users')
-        .select('*')
-        .eq('email', email)
-        .single()
-
-      if (adminData) {
-        router.push('/admin')
-      } else {
-        router.push('/dashboard')
+      if (error) {
+        setMessage(error.message)
+        setIsSuccess(false)
+        setDebugInfo(`Auth Error: ${JSON.stringify(error)}`)
+        setLoading(false)
+        return
       }
+
+      if (data.session) {
+        setDebugInfo(`Session created for: ${data.session.user.email}`)
+        
+        // Check if user is admin
+        const { data: adminData, error: adminError } = await supabase
+          .from('admin_users')
+          .select('*')
+          .eq('email', email.toLowerCase())
+          .single()
+
+        if (adminError) {
+          setDebugInfo(prev => prev + ` | Admin check: ${adminError.message}`)
+        }
+
+        if (adminData) {
+          setDebugInfo(prev => prev + ' | Routing to /admin')
+          router.push('/admin')
+        } else {
+          setDebugInfo(prev => prev + ' | Routing to /dashboard')
+          router.push('/dashboard')
+        }
+      } else {
+        setMessage('No session created')
+        setDebugInfo('No session in response')
+      }
+    } catch (err) {
+      setMessage('Unexpected error')
+      setDebugInfo(`Catch error: ${err}`)
     }
     setLoading(false)
   }
@@ -148,6 +168,12 @@ export default function LoginPage() {
             isSuccess ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
           }`}>
             {message}
+          </div>
+        )}
+
+        {debugInfo && (
+          <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800 break-all">
+            <strong>Debug:</strong> {debugInfo}
           </div>
         )}
 
