@@ -557,7 +557,7 @@ export default function AdminDashboard() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => { resetTaskForm(); setEditingTask(null); }} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+                <button onClick={() => { resetTaskForm(); setEditingTask(null); setShowTaskEditor(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
                   <Plus size={18} /> Add {taskEditorMode === 'customer' ? 'Custom ' : ''}Task
                 </button>
                 <button onClick={() => setShowTaskEditor(false)} className="p-2 hover:bg-gray-100 rounded-lg"><X size={20} /></button>
@@ -566,8 +566,8 @@ export default function AdminDashboard() {
 
             <div className="p-6">
               {/* Task Form */}
-              {(editingTask || taskForm.task_name === '') && editingTask === null && taskForm.task_name === '' ? null : (
-                (editingTask || taskForm.task_name !== '') && (
+              {(!editingTask && !taskForm.task_name) ? null : (
+                (editingTask || taskForm.task_name) && (
                   <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
                     <h3 className="font-semibold mb-4">{editingTask ? 'Edit Task' : 'New Task'}</h3>
                     <div className="grid grid-cols-2 gap-4">
