@@ -806,13 +806,13 @@ export default function AdminDashboard() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Unlocks Report</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Unlocks Reports <span className="font-normal text-gray-400">(comma-separated)</span></label>
                       <input
                         type="text"
                         value={taskForm.unlocks_report}
                         onChange={(e) => setTaskForm({ ...taskForm, unlocks_report: e.target.value })}
                         className="w-full px-3 py-2 border rounded-lg"
-                        placeholder="e.g., Sales by Hour"
+                        placeholder="e.g., Sales by Hour, Labor by Hour, Heartbeat Analytics"
                       />
                     </div>
 
