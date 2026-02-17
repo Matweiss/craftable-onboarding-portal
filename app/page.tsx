@@ -73,14 +73,12 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-craftable-navy to-craftable-blue">
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
         <div className="text-center mb-8">
-          <Image 
-              src="/craftable-logo.png" 
-              alt="Craftable" 
-              width={200} 
-              height={60} 
-              className="mx-auto mb-2"
-              priority
-            />
+          <div className="flex items-center justify-center gap-2 mb-2">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#1e3a5f] to-[#2d5a87] flex items-center justify-center">
+                <span className="text-white font-bold text-lg">C</span>
+              </div>
+              <span className="text-3xl font-bold text-[#1e3a5f] tracking-tight">craftable</span>
+            </div>
           <p className="text-gray-500 mt-2">Onboarding Portal</p>
         </div>
 
