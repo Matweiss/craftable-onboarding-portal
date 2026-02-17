@@ -32,6 +32,8 @@ export interface Task {
   unlocks_report: string | null
   requires_upload?: boolean
   template_files?: { name: string; url: string }[]
+  customer_id?: string | null
+  help_url?: string | null
 }
 
 export interface CustomerProgress {
