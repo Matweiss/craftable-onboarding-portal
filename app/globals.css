@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --craftable-blue: #0077B5;
+  --craftable-navy: #1E3A5F;
+  --craftable-green: #3AAA35;
+  --craftable-orange: #F7941D;
+  --craftable-coral: #FF6B6B;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+}
