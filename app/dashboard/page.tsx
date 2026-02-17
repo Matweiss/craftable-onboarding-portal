@@ -7,7 +7,7 @@ import {
   CheckCircle2, Circle, Clock, FileText, ChevronDown, ChevronUp, 
   LogOut, MessageSquare, Upload, Download, ExternalLink, Lock, 
   Unlock, BookOpen, LayoutDashboard, Send, X, Check, AlertCircle,
-  Calendar, Target, TrendingUp
+  Calendar, Target, TrendingUp, Bell
 } from 'lucide-react'
 
 interface TaskComment {
@@ -24,6 +24,7 @@ interface TaskWithProgress extends Task {
   progress: CustomerProgress | null
   comments: TaskComment[]
   customer_id?: string | null
+  has_unread_reply?: boolean
 }
 
 interface PhaseGroup {
@@ -55,6 +56,8 @@ export default function CustomerDashboard() {
   
   const [estimatedDate, setEstimatedDate] = useState<Date | null>(null)
   const [avgDaysPerTask, setAvgDaysPerTask] = useState<number | null>(null)
+  const [unreadReplies, setUnreadReplies] = useState<number>(0)
+  const [hiddenPhases, setHiddenPhases] = useState<number[]>([])
 
   useEffect(() => { loadData() }, [])
 
@@ -88,34 +91,48 @@ export default function CustomerDashboard() {
       const { data: customerData, error: customerError } = await supabase.from('customers').select('*').eq('email', session.user.email).single()
       if (customerError || !customerData) { setError(`No customer record found for: ${session.user.email}`); setLoading(false); return }
       setCustomer(customerData)
+      setHiddenPhases(customerData.hidden_phases || [])
 
       // Get tasks: global (customer_id IS NULL) + customer-specific
-      const { data: tasksData } = await supabase.from('tasks').select('*').or(`customer_id.is.null,customer_id.eq.${customerData.id}`).order('sort_order')
+      const { data: tasksData } = await supabase.from('tasks').select('*').or(`customer_id.is.null,customer_id.eq.${customerData.id}`).order('phase').order('sort_order')
       const { data: progressData } = await supabase.from('customer_progress').select('*').eq('customer_id', customerData.id)
       const { data: commentsData } = await supabase.from('task_comments').select('*').eq('customer_id', customerData.id).order('created_at', { ascending: true })
       const { data: reportsData } = await supabase.from('reports').select('*').order('sort_order')
 
-      // Filter out skipped tasks and build tasks with progress
+      // Count unread replies
+      const unreadCount = (progressData || []).filter(p => p.has_unread_reply).length
+      setUnreadReplies(unreadCount)
+
+      // Filter out skipped tasks and hidden phases
       const activeProgress = (progressData || []).filter(p => !p.is_skipped)
       const tasksWithProgress: TaskWithProgress[] = (tasksData || []).map(task => {
         const progress = progressData?.find(p => p.task_id === task.id)
         if (progress?.is_skipped) return null
+        // Don't filter by hidden phases here - we'll filter at the phase level
         return {
           ...task,
           progress: progress || null,
-          comments: commentsData?.filter(c => progress && c.progress_id === progress.id) || []
+          comments: commentsData?.filter(c => progress && c.progress_id === progress.id) || [],
+          has_unread_reply: progress?.has_unread_reply || false
         }
       }).filter((t): t is TaskWithProgress => t !== null)
 
+      // Filter tasks by visible phases for calculations
+      const visibleTasks = tasksWithProgress.filter(t => !(customerData.hidden_phases || []).includes(t.phase))
+
       if (activeProgress.length > 0) {
-        const { estimatedDate: estDate, avgDays } = calculateEstimatedCompletion(activeProgress, tasksWithProgress.length)
+        const visibleProgress = activeProgress.filter(p => {
+          const task = tasksData?.find(t => t.id === p.task_id)
+          return task && !(customerData.hidden_phases || []).includes(task.phase)
+        })
+        const { estimatedDate: estDate, avgDays } = calculateEstimatedCompletion(visibleProgress, visibleTasks.length)
         setEstimatedDate(estDate)
         setAvgDaysPerTask(avgDays)
       }
 
-      // Group by phase
+      // Group by phase (only visible phases)
       const phaseGroups: PhaseGroup[] = []
-      tasksWithProgress.forEach(task => {
+      visibleTasks.forEach(task => {
         let group = phaseGroups.find(g => g.phase === task.phase)
         if (!group) { group = { phase: task.phase, phase_name: task.phase_name, tasks: [], completed: 0, verified: 0, total: 0 }; phaseGroups.push(group) }
         group.tasks.push(task)
@@ -146,11 +163,30 @@ export default function CustomerDashboard() {
 
   const addComment = async (taskId: string) => {
     if (!customer || !newComment.trim()) return
-    const progress = phases.flatMap(p => p.tasks).find(t => t.id === taskId)?.progress
+    
+    const task = phases.flatMap(p => p.tasks).find(t => t.id === taskId)
+    const progress = task?.progress
     if (!progress) return
+    
     await supabase.from('task_comments').insert({ progress_id: progress.id, customer_id: customer.id, author_email: customer.email, author_name: customer.name, author_role: 'customer', message: newComment.trim() })
     setNewComment(''); setCommentingTask(null)
     await loadData()
+  }
+
+  const markAsRead = async (progressId: string) => {
+    await supabase.from('customer_progress').update({ has_unread_reply: false }).eq('id', progressId)
+    await loadData()
+  }
+
+  const expandTaskWithUnread = (taskId: string, phase: number, progressId: string) => {
+    // Expand the phase if not already expanded
+    if (!expandedPhases.includes(phase)) {
+      setExpandedPhases(prev => [...prev, phase])
+    }
+    // Set the commenting task to show the thread
+    setCommentingTask(taskId)
+    // Mark as read
+    markAsRead(progressId)
   }
 
   const handleFileUpload = async (taskId: string, files: FileList) => {
@@ -186,6 +222,9 @@ export default function CustomerDashboard() {
   const daysUntil = estimatedDate ? Math.ceil((estimatedDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : null
   const formatEstimatedDate = (date: Date) => date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
 
+  // Get tasks with unread replies for notification list
+  const tasksWithUnread = phases.flatMap(p => p.tasks.filter(t => t.has_unread_reply).map(t => ({ ...t, phaseName: p.phase_name, phaseNum: p.phase })))
+
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="text-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div><p className="mt-4 text-gray-600">Loading your dashboard...</p></div></div>
   if (error) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="bg-white p-8 rounded-lg shadow-lg max-w-md text-center"><div className="text-red-500 text-5xl mb-4">⚠️</div><h2 className="text-xl font-bold mb-2">Dashboard Error</h2><p className="text-gray-600 mb-4">{error}</p><button onClick={() => router.push('/')} className="px-4 py-2 bg-blue-500 text-white rounded-lg">Back to Login</button></div></div>
 
@@ -208,6 +247,35 @@ export default function CustomerDashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
+        {/* Unread replies notification banner */}
+        {unreadReplies > 0 && (
+          <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-xl">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-100 rounded-full">
+                <Bell className="w-5 h-5 text-purple-600" />
+              </div>
+              <div className="flex-1">
+                <p className="font-medium text-purple-900">You have {unreadReplies} new {unreadReplies === 1 ? 'reply' : 'replies'} from your Onboarding Manager</p>
+                <p className="text-sm text-purple-700">Click on a task below to view the message</p>
+              </div>
+            </div>
+            {tasksWithUnread.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {tasksWithUnread.map(task => (
+                  <button
+                    key={task.id}
+                    onClick={() => task.progress && expandTaskWithUnread(task.id, task.phaseNum, task.progress.id)}
+                    className="px-3 py-1.5 text-sm bg-white border border-purple-200 rounded-lg hover:bg-purple-50 flex items-center gap-2"
+                  >
+                    <MessageSquare size={14} className="text-purple-500" />
+                    <span className="text-purple-900">{task.task_name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border p-6">
             <div className="flex items-center justify-between mb-4">
@@ -240,7 +308,14 @@ export default function CustomerDashboard() {
             {phases.map((phase) => (
               <div key={phase.phase} className="bg-white rounded-lg shadow-sm border overflow-hidden">
                 <button onClick={() => togglePhase(phase.phase)} className={`w-full px-4 py-3 flex items-center justify-between text-white ${getPhaseColor(phase.phase)}`}>
-                  <span className="font-semibold">{phase.phase_name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold">{phase.phase_name}</span>
+                    {phase.tasks.some(t => t.has_unread_reply) && (
+                      <span className="w-5 h-5 flex items-center justify-center text-xs bg-white text-purple-600 rounded-full font-bold">
+                        {phase.tasks.filter(t => t.has_unread_reply).length}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-3"><span className="text-sm opacity-90">{phase.completed}/{phase.total} done • {phase.verified} verified</span>{expandedPhases.includes(phase.phase) ? <ChevronUp size={20} /> : <ChevronDown size={20} />}</div>
                 </button>
 
@@ -249,8 +324,10 @@ export default function CustomerDashboard() {
                     {phase.tasks.map((task) => {
                       const unlockedReports = getUnlockedReports(task)
                       const isCustomTask = !!task.customer_id
+                      const hasUnread = task.has_unread_reply
+                      
                       return (
-                        <div key={task.id} className={`p-4 transition-all ${task.progress?.verified ? 'bg-green-50' : task.progress?.completed ? 'bg-yellow-50' : 'hover:bg-gray-50'}`}>
+                        <div key={task.id} className={`p-4 transition-all ${hasUnread ? 'bg-purple-50 border-l-4 border-purple-500' : task.progress?.verified ? 'bg-green-50' : task.progress?.completed ? 'bg-yellow-50' : 'hover:bg-gray-50'}`}>
                           <div className="flex items-start gap-3">
                             <button onClick={() => toggleTask(task.id, task.progress?.completed || false)} disabled={updatingTask === task.id} className="mt-0.5 flex-shrink-0">
                               {updatingTask === task.id ? <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /> : task.progress?.verified ? <CheckCircle2 className="w-5 h-5 text-green-600" /> : task.progress?.completed ? <AlertCircle className="w-5 h-5 text-yellow-500" /> : <Circle className="w-5 h-5 text-gray-300 hover:text-blue-500 transition-colors" />}
@@ -259,6 +336,11 @@ export default function CustomerDashboard() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <h3 className={`font-medium ${task.progress?.verified ? 'text-green-700' : task.progress?.completed ? 'text-yellow-700' : 'text-gray-900'}`}>{task.task_name}</h3>
+                                {hasUnread && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-purple-500 text-white rounded-full flex items-center gap-1">
+                                    <MessageSquare size={10} /> New Reply
+                                  </span>
+                                )}
                                 {isCustomTask && <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">Custom</span>}
                                 {task.is_success_gate && <span className="px-2 py-0.5 text-xs font-medium bg-green-500 text-white rounded-full">Success Gate</span>}
                                 {task.progress?.completed && !task.progress?.verified && <span className="px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 rounded-full">Awaiting OM Verification</span>}
@@ -290,11 +372,37 @@ export default function CustomerDashboard() {
                               )}
 
                               <div className="mt-3">
-                                {task.comments.length > 0 && <div className="space-y-2 mb-2">{task.comments.map((comment) => <div key={comment.id} className={`p-2 rounded-lg text-sm ${comment.author_role === 'customer' ? 'bg-gray-100 ml-0 mr-8' : 'bg-blue-50 ml-8 mr-0'}`}><div className="flex items-center gap-2 mb-1"><span className="font-medium text-xs">{comment.author_name || comment.author_email}</span><span className={`text-xs px-1.5 py-0.5 rounded ${comment.author_role === 'om' ? 'bg-blue-200 text-blue-800' : comment.author_role === 'admin' ? 'bg-purple-200 text-purple-800' : 'bg-gray-200 text-gray-600'}`}>{comment.author_role}</span><span className="text-xs text-gray-400">{new Date(comment.created_at).toLocaleString()}</span></div><p className="text-gray-700">{comment.message}</p></div>)}</div>}
+                                {task.comments.length > 0 && (
+                                  <div className="space-y-2 mb-2">
+                                    {task.comments.map((comment) => (
+                                      <div key={comment.id} className={`p-2 rounded-lg text-sm ${comment.author_role === 'customer' ? 'bg-gray-100 ml-0 mr-8' : 'bg-blue-50 ml-8 mr-0'}`}>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <span className="font-medium text-xs">{comment.author_name || comment.author_email}</span>
+                                          <span className={`text-xs px-1.5 py-0.5 rounded ${comment.author_role === 'om' ? 'bg-blue-200 text-blue-800' : comment.author_role === 'admin' ? 'bg-purple-200 text-purple-800' : 'bg-gray-200 text-gray-600'}`}>{comment.author_role}</span>
+                                          <span className="text-xs text-gray-400">{new Date(comment.created_at).toLocaleString()}</span>
+                                        </div>
+                                        <p className="text-gray-700">{comment.message}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                                 {commentingTask === task.id ? (
-                                  <div className="flex gap-2"><input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Add a note or question..." className="flex-1 text-sm p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500" onKeyDown={(e) => e.key === 'Enter' && addComment(task.id)} /><button onClick={() => addComment(task.id)} className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"><Send size={16} /></button><button onClick={() => { setCommentingTask(null); setNewComment(''); }} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"><X size={16} /></button></div>
+                                  <div className="flex gap-2">
+                                    <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Add a note or question..." className="flex-1 text-sm p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500" onKeyDown={(e) => e.key === 'Enter' && addComment(task.id)} />
+                                    <button onClick={() => addComment(task.id)} className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"><Send size={16} /></button>
+                                    <button onClick={() => { setCommentingTask(null); setNewComment(''); if (hasUnread && task.progress) markAsRead(task.progress.id); }} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"><X size={16} /></button>
+                                  </div>
                                 ) : (
-                                  <button onClick={() => setCommentingTask(task.id)} className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-500"><MessageSquare size={12} />{task.comments.length > 0 ? `${task.comments.length} notes` : 'Add note'}</button>
+                                  <button 
+                                    onClick={() => { 
+                                      setCommentingTask(task.id); 
+                                      if (hasUnread && task.progress) markAsRead(task.progress.id); 
+                                    }} 
+                                    className={`flex items-center gap-1 text-xs ${hasUnread ? 'text-purple-600 font-medium' : 'text-gray-500'} hover:text-blue-500`}
+                                  >
+                                    <MessageSquare size={12} />
+                                    {hasUnread ? 'View reply & respond' : task.comments.length > 0 ? `${task.comments.length} notes` : 'Add note'}
+                                  </button>
                                 )}
                               </div>
                             </div>
