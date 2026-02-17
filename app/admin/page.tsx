@@ -50,6 +50,11 @@ const PHASE_OPTIONS = [
   { value: 4, label: 'Phase 4: Run — Month 2+', color: 'bg-indigo-900' },
 ]
 
+const DEFAULT_TASK_FORM = {
+  phase: 0, phase_name: 'Phase 0: Before We Start', task_name: '', description: '',
+  owner: 'Customer', est_time: '', is_success_gate: false, unlocks_report: '', requires_upload: false
+}
+
 export default function AdminDashboard() {
   const router = useRouter()
   const [currentUser, setCurrentUser] = useState<{ email: string; name: string; role: string } | null>(null)
@@ -77,15 +82,22 @@ export default function AdminDashboard() {
   const [showActivePanel, setShowActivePanel] = useState(false)
   const [showCompletedPanel, setShowCompletedPanel] = useState(false)
   
-  // Task Editor - Global vs Customer
-  const [showTaskEditor, setShowTaskEditor] = useState(false)
-  const [taskEditorMode, setTaskEditorMode] = useState<'global' | 'customer'>('global')
-  const [taskEditorCustomer, setTaskEditorCustomer] = useState<CustomerWithProgress | null>(null)
-  const [editingTask, setEditingTask] = useState<Task | null>(null)
-  const [taskForm, setTaskForm] = useState({
-    phase: 0, phase_name: 'Phase 0: Before We Start', task_name: '', description: '',
-    owner: 'Customer', est_time: '', is_success_gate: false, unlocks_report: '', requires_upload: false
+  // Task Editor - using single state object for clarity
+  const [taskEditor, setTaskEditor] = useState<{
+    isOpen: boolean
+    mode: 'global' | 'customer'
+    customer: CustomerWithProgress | null
+    isFormOpen: boolean
+    editingTask: Task | null
+  }>({
+    isOpen: false,
+    mode: 'global',
+    customer: null,
+    isFormOpen: false,
+    editingTask: null
   })
+  
+  const [taskForm, setTaskForm] = useState(DEFAULT_TASK_FORM)
   const [savingTask, setSavingTask] = useState(false)
   
   const [newCustomer, setNewCustomer] = useState({ name: '', email: '', company: '', assigned_om: '' })
@@ -128,7 +140,6 @@ export default function AdminDashboard() {
     setOmUsers(omWithCounts)
 
     const customersWithProgress: CustomerWithProgress[] = (customersData || []).map(customer => {
-      // Get tasks for this customer: global + customer-specific
       const customerTaskIds = (tasksData || [])
         .filter(t => !t.customer_id || t.customer_id === customer.id)
         .map(t => t.id)
@@ -198,7 +209,6 @@ export default function AdminDashboard() {
   const loadCustomerDetails = async (customer: CustomerWithProgress) => {
     setSelectedCustomer(customer)
     
-    // Get global tasks + this customer's custom tasks
     const { data: tasksData } = await supabase
       .from('tasks')
       .select('*')
@@ -225,37 +235,42 @@ export default function AdminDashboard() {
     setCustomerTasks(tasksWithProgress)
   }
 
-  // Task Management Functions
+  // Task Editor Functions
   const openGlobalTaskEditor = () => {
-    setTaskEditorMode('global')
-    setTaskEditorCustomer(null)
-    setShowTaskEditor(true)
-    resetTaskForm()
+    setTaskEditor({ isOpen: true, mode: 'global', customer: null, isFormOpen: false, editingTask: null })
+    setTaskForm(DEFAULT_TASK_FORM)
   }
 
   const openCustomerTaskEditor = (customer: CustomerWithProgress) => {
-    setTaskEditorMode('customer')
-    setTaskEditorCustomer(customer)
-    setShowTaskEditor(true)
-    resetTaskForm()
+    setTaskEditor({ isOpen: true, mode: 'customer', customer, isFormOpen: false, editingTask: null })
+    setTaskForm(DEFAULT_TASK_FORM)
   }
 
-  const resetTaskForm = () => {
-    setEditingTask(null)
-    setTaskForm({
-      phase: 0, phase_name: 'Phase 0: Before We Start', task_name: '', description: '',
-      owner: 'Customer', est_time: '', is_success_gate: false, unlocks_report: '', requires_upload: false
-    })
+  const closeTaskEditor = () => {
+    setTaskEditor({ isOpen: false, mode: 'global', customer: null, isFormOpen: false, editingTask: null })
+    setTaskForm(DEFAULT_TASK_FORM)
   }
 
-  const openEditTask = (task: Task) => {
-    setEditingTask(task)
+  const openAddForm = () => {
+    console.log('Opening add form')
+    setTaskForm(DEFAULT_TASK_FORM)
+    setTaskEditor(prev => ({ ...prev, isFormOpen: true, editingTask: null }))
+  }
+
+  const openEditForm = (task: Task) => {
+    console.log('Opening edit form for', task.task_name)
     setTaskForm({
       phase: task.phase, phase_name: task.phase_name, task_name: task.task_name,
       description: task.description || '', owner: task.owner, est_time: task.est_time || '',
       is_success_gate: task.is_success_gate, unlocks_report: task.unlocks_report || '',
       requires_upload: task.requires_upload || false
     })
+    setTaskEditor(prev => ({ ...prev, isFormOpen: true, editingTask: task }))
+  }
+
+  const closeForm = () => {
+    setTaskEditor(prev => ({ ...prev, isFormOpen: false, editingTask: null }))
+    setTaskForm(DEFAULT_TASK_FORM)
   }
 
   const handlePhaseChange = (phase: number) => {
@@ -264,16 +279,17 @@ export default function AdminDashboard() {
   }
 
   const saveTask = async () => {
+    if (!taskForm.task_name.trim()) return
     setSavingTask(true)
-    const customerId = taskEditorMode === 'customer' ? taskEditorCustomer?.id : null
+    const customerId = taskEditor.mode === 'customer' ? taskEditor.customer?.id : null
 
-    if (editingTask) {
+    if (taskEditor.editingTask) {
       await supabase.from('tasks').update({
         phase: taskForm.phase, phase_name: taskForm.phase_name, task_name: taskForm.task_name,
         description: taskForm.description, owner: taskForm.owner, est_time: taskForm.est_time,
         is_success_gate: taskForm.is_success_gate, unlocks_report: taskForm.unlocks_report || null,
         requires_upload: taskForm.requires_upload
-      }).eq('id', editingTask.id)
+      }).eq('id', taskEditor.editingTask.id)
     } else {
       const maxOrder = allTasks.filter(t => t.phase === taskForm.phase).reduce((max, t) => Math.max(max, t.sort_order), 0)
 
@@ -285,13 +301,10 @@ export default function AdminDashboard() {
         customer_id: customerId
       }).select().single()
 
-      // Create progress records
       if (newTask) {
         if (customerId) {
-          // Custom task - only for this customer
           await supabase.from('customer_progress').insert({ customer_id: customerId, task_id: newTask.id })
         } else {
-          // Global task - for all customers
           const progressRecords = allCustomers.map(c => ({ customer_id: c.id, task_id: newTask.id }))
           if (progressRecords.length > 0) await supabase.from('customer_progress').insert(progressRecords)
         }
@@ -299,7 +312,7 @@ export default function AdminDashboard() {
     }
 
     setSavingTask(false)
-    resetTaskForm()
+    closeForm()
     await loadData()
     if (selectedCustomer) await loadCustomerDetails(selectedCustomer)
   }
@@ -432,9 +445,9 @@ export default function AdminDashboard() {
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div></div>
   if (error) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="bg-white p-8 rounded-lg shadow-lg text-center"><p className="text-red-600 mb-4">{error}</p><button onClick={() => router.push('/')} className="px-4 py-2 bg-blue-500 text-white rounded-lg">Back to Login</button></div></div>
 
-  // Get tasks for the task editor based on mode
-  // Tasks are global (no customer_id) - show all tasks
-  const editorTasks = allTasks
+  const editorTasks = taskEditor.mode === 'global' 
+    ? allTasks.filter(t => !t.customer_id)
+    : allTasks.filter(t => !t.customer_id || t.customer_id === taskEditor.customer?.id)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -534,82 +547,86 @@ export default function AdminDashboard() {
       </main>
 
       {/* Task Editor Panel */}
-      {showTaskEditor && (
-        <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowTaskEditor(false)}>
+      {taskEditor.isOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50" onClick={closeTaskEditor}>
           <div className="absolute right-0 top-0 h-full w-full max-w-4xl bg-white shadow-xl overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between z-10">
-              <div>
-                <div className="flex items-center gap-3">
-                  <h2 className="text-xl font-bold">
-                    {taskEditorMode === 'global' ? 'Global Task Templates' : `Tasks for ${taskEditorCustomer?.name}`}
-                  </h2>
-                  {taskEditorMode === 'customer' && (
-                    <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
-                      <User size={12} /> Customer-Specific
-                    </span>
-                  )}
+            <div className="sticky top-0 bg-white border-b px-6 py-4 z-10">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-xl font-bold">
+                      {taskEditor.mode === 'global' ? 'Global Task Templates' : `Tasks for ${taskEditor.customer?.name}`}
+                    </h2>
+                    {taskEditor.mode === 'customer' && (
+                      <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
+                        <User size={12} /> Customer-Specific
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-gray-500">
+                    {taskEditor.mode === 'global' 
+                      ? 'These tasks apply to all customers by default'
+                      : 'Add custom tasks or skip global tasks for this customer'
+                    }
+                  </p>
                 </div>
-                <p className="text-sm text-gray-500">
-                  {taskEditorMode === 'global' 
-                    ? 'These tasks apply to all customers by default'
-                    : 'Add custom tasks or skip global tasks for this customer'
-                  }
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => { resetTaskForm(); setEditingTask(null); setShowTaskEditor(true); }} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
-                  <Plus size={18} /> Add {taskEditorMode === 'customer' ? 'Custom ' : ''}Task
-                </button>
-                <button onClick={() => setShowTaskEditor(false)} className="p-2 hover:bg-gray-100 rounded-lg"><X size={20} /></button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); openAddForm(); }} 
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+                  >
+                    <Plus size={18} /> Add {taskEditor.mode === 'customer' ? 'Custom ' : ''}Task
+                  </button>
+                  <button onClick={closeTaskEditor} className="p-2 hover:bg-gray-100 rounded-lg"><X size={20} /></button>
+                </div>
               </div>
             </div>
 
             <div className="p-6">
               {/* Task Form */}
-              {(!editingTask && !taskForm.task_name) ? null : (
-                (editingTask || taskForm.task_name) && (
-                  <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                    <h3 className="font-semibold mb-4">{editingTask ? 'Edit Task' : 'New Task'}</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Phase</label>
-                        <select value={taskForm.phase} onChange={(e) => handlePhaseChange(Number(e.target.value))} className="w-full px-3 py-2 border rounded-lg">
-                          {PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Owner</label>
-                        <select value={taskForm.owner} onChange={(e) => setTaskForm({ ...taskForm, owner: e.target.value })} className="w-full px-3 py-2 border rounded-lg">
-                          <option value="Customer">Customer</option><option value="OM">OM</option><option value="Both">Both</option>
-                        </select>
-                      </div>
-                      <div className="col-span-2">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Task Name *</label>
-                        <input type="text" value={taskForm.task_name} onChange={(e) => setTaskForm({ ...taskForm, task_name: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., Complete Invoice Setup" />
-                      </div>
-                      <div className="col-span-2">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                        <textarea value={taskForm.description} onChange={(e) => setTaskForm({ ...taskForm, description: e.target.value })} className="w-full px-3 py-2 border rounded-lg" rows={2} />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Estimated Time</label>
-                        <input type="text" value={taskForm.est_time} onChange={(e) => setTaskForm({ ...taskForm, est_time: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., 30-45 min" />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Unlocks Reports <span className="font-normal text-gray-400">(comma-separated)</span></label>
-                        <input type="text" value={taskForm.unlocks_report} onChange={(e) => setTaskForm({ ...taskForm, unlocks_report: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., Sales by Hour, Labor Report" />
-                      </div>
-                      <div className="col-span-2 flex items-center gap-6">
-                        <label className="flex items-center gap-2"><input type="checkbox" checked={taskForm.is_success_gate} onChange={(e) => setTaskForm({ ...taskForm, is_success_gate: e.target.checked })} className="w-4 h-4 rounded" /><span className="text-sm">Success Gate</span></label>
-                        <label className="flex items-center gap-2"><input type="checkbox" checked={taskForm.requires_upload} onChange={(e) => setTaskForm({ ...taskForm, requires_upload: e.target.checked })} className="w-4 h-4 rounded" /><span className="text-sm">Requires File Upload</span></label>
-                      </div>
+              {taskEditor.isFormOpen && (
+                <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <h3 className="font-semibold mb-4">{taskEditor.editingTask ? 'Edit Task' : 'New Task'}</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Phase</label>
+                      <select value={taskForm.phase} onChange={(e) => handlePhaseChange(Number(e.target.value))} className="w-full px-3 py-2 border rounded-lg bg-white">
+                        {PHASE_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                      </select>
                     </div>
-                    <div className="flex justify-end gap-2 mt-4">
-                      <button onClick={resetTaskForm} className="px-4 py-2 border rounded-lg hover:bg-gray-50">Cancel</button>
-                      <button onClick={saveTask} disabled={!taskForm.task_name || savingTask} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"><Save size={16} />{savingTask ? 'Saving...' : 'Save Task'}</button>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Owner</label>
+                      <select value={taskForm.owner} onChange={(e) => setTaskForm({ ...taskForm, owner: e.target.value })} className="w-full px-3 py-2 border rounded-lg bg-white">
+                        <option value="Customer">Customer</option><option value="OM">OM</option><option value="Both">Both</option>
+                      </select>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Task Name *</label>
+                      <input type="text" value={taskForm.task_name} onChange={(e) => setTaskForm({ ...taskForm, task_name: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., Complete Invoice Setup" />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                      <textarea value={taskForm.description} onChange={(e) => setTaskForm({ ...taskForm, description: e.target.value })} className="w-full px-3 py-2 border rounded-lg" rows={2} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Estimated Time</label>
+                      <input type="text" value={taskForm.est_time} onChange={(e) => setTaskForm({ ...taskForm, est_time: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., 30-45 min" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Unlocks Reports <span className="font-normal text-gray-400">(comma-separated)</span></label>
+                      <input type="text" value={taskForm.unlocks_report} onChange={(e) => setTaskForm({ ...taskForm, unlocks_report: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g., Sales by Hour, Labor Report" />
+                    </div>
+                    <div className="col-span-2 flex items-center gap-6">
+                      <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={taskForm.is_success_gate} onChange={(e) => setTaskForm({ ...taskForm, is_success_gate: e.target.checked })} className="w-4 h-4 rounded" /><span className="text-sm">Success Gate</span></label>
+                      <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={taskForm.requires_upload} onChange={(e) => setTaskForm({ ...taskForm, requires_upload: e.target.checked })} className="w-4 h-4 rounded" /><span className="text-sm">Requires File Upload</span></label>
                     </div>
                   </div>
-                )
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button type="button" onClick={closeForm} className="px-4 py-2 border rounded-lg hover:bg-gray-50">Cancel</button>
+                    <button type="button" onClick={saveTask} disabled={!taskForm.task_name.trim() || savingTask} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"><Save size={16} />{savingTask ? 'Saving...' : 'Save Task'}</button>
+                  </div>
+                </div>
               )}
 
               {/* Task List */}
@@ -622,8 +639,8 @@ export default function AdminDashboard() {
                   <div className="border border-t-0 rounded-b-lg divide-y">
                     {group.tasks.map((task) => {
                       const isCustomTask = !!task.customer_id
-                      const progress = taskEditorMode === 'customer' && taskEditorCustomer 
-                        ? allProgress.find(p => p.task_id === task.id && p.customer_id === taskEditorCustomer.id)
+                      const progress = taskEditor.mode === 'customer' && taskEditor.customer 
+                        ? allProgress.find(p => p.task_id === task.id && p.customer_id === taskEditor.customer?.id)
                         : null
                       const isSkipped = progress?.is_skipped || false
 
@@ -642,24 +659,28 @@ export default function AdminDashboard() {
                           </div>
                           <div className="flex items-center gap-1">
                             {/* Customer mode: skip/unskip global tasks */}
-                            {taskEditorMode === 'customer' && !isCustomTask && progress && (
-                              <button onClick={() => toggleSkipTask(progress.id, isSkipped)} className={`p-2 rounded-lg ${isSkipped ? 'text-green-500 hover:bg-green-50' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`} title={isSkipped ? 'Unskip Task' : 'Skip Task'}>
+                            {taskEditor.mode === 'customer' && !isCustomTask && progress && (
+                              <button type="button" onClick={() => toggleSkipTask(progress.id, isSkipped)} className={`p-2 rounded-lg ${isSkipped ? 'text-green-500 hover:bg-green-50' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`} title={isSkipped ? 'Unskip Task' : 'Skip Task'}>
                                 <SkipForward size={16} />
                               </button>
                             )}
                             {/* Customer mode: duplicate global task for customization */}
-                            {taskEditorMode === 'customer' && !isCustomTask && taskEditorCustomer && (
-                              <button onClick={() => duplicateTaskForCustomer(task, taskEditorCustomer.id)} className="p-2 text-gray-400 hover:text-purple-500 hover:bg-purple-50 rounded-lg" title="Create Custom Copy">
+                            {taskEditor.mode === 'customer' && !isCustomTask && taskEditor.customer && (
+                              <button type="button" onClick={() => duplicateTaskForCustomer(task, taskEditor.customer!.id)} className="p-2 text-gray-400 hover:text-purple-500 hover:bg-purple-50 rounded-lg" title="Create Custom Copy">
                                 <Copy size={16} />
                               </button>
                             )}
-                            {/* Edit task (global tasks in global mode, custom tasks in customer mode) */}
-                            {(taskEditorMode === 'global' || isCustomTask) && (
-                              <button onClick={() => openEditTask(task)} className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg"><Pencil size={16} /></button>
+                            {/* Edit task - global in global mode, or custom tasks in customer mode */}
+                            {(taskEditor.mode === 'global' || isCustomTask) && (
+                              <button type="button" onClick={() => openEditForm(task)} className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg" title="Edit Task">
+                                <Pencil size={16} />
+                              </button>
                             )}
-                            {/* Delete (global in global mode, custom in customer mode) */}
-                            {(taskEditorMode === 'global' || isCustomTask) && (
-                              <button onClick={() => deleteTask(task.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 size={16} /></button>
+                            {/* Delete - global in global mode, custom in customer mode */}
+                            {(taskEditor.mode === 'global' || isCustomTask) && (
+                              <button type="button" onClick={() => deleteTask(task.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Delete Task">
+                                <Trash2 size={16} />
+                              </button>
                             )}
                           </div>
                         </div>
