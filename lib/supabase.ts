@@ -47,6 +47,7 @@ export interface CustomerProgress {
   verified: boolean
   verified_at: string | null
   verified_by: string | null
+  is_skipped: boolean
   updated_at: string
 }
 
