@@ -24,6 +24,7 @@ interface TaskWithProgress extends Task {
   comments: TaskComment[]
   requires_upload?: boolean
   template_files?: { name: string; url: string }[]
+  help_url?: string | null
 }
 
 interface PhaseGroup {
