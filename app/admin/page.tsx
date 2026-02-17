@@ -7,7 +7,7 @@ import {
   Users, CheckCircle2, Clock, AlertTriangle, LogOut, Plus, Search,
   ChevronDown, ChevronUp, X, Check, MessageSquare, Send, Download, 
   UserPlus, Settings, Eye, Shield, ListTodo, Pencil, Trash2, Save,
-  SkipForward, User, Copy
+  SkipForward, User, Copy, ArrowUp, ArrowDown, EyeOff, MoveVertical
 } from 'lucide-react'
 
 interface TaskComment {
@@ -32,6 +32,7 @@ interface CustomerWithProgress extends Customer {
   unreadComments: number
   customTaskCount: number
   skippedTaskCount: number
+  hidden_phases?: number[]
 }
 
 interface OMUser {
@@ -82,23 +83,17 @@ export default function AdminDashboard() {
   const [showActivePanel, setShowActivePanel] = useState(false)
   const [showCompletedPanel, setShowCompletedPanel] = useState(false)
   
-  // Task Editor - using single state object for clarity
   const [taskEditor, setTaskEditor] = useState<{
     isOpen: boolean
     mode: 'global' | 'customer'
     customer: CustomerWithProgress | null
     isFormOpen: boolean
     editingTask: Task | null
-  }>({
-    isOpen: false,
-    mode: 'global',
-    customer: null,
-    isFormOpen: false,
-    editingTask: null
-  })
+  }>({ isOpen: false, mode: 'global', customer: null, isFormOpen: false, editingTask: null })
   
   const [taskForm, setTaskForm] = useState(DEFAULT_TASK_FORM)
   const [savingTask, setSavingTask] = useState(false)
+  const [movingTask, setMovingTask] = useState<string | null>(null)
   
   const [newCustomer, setNewCustomer] = useState({ name: '', email: '', company: '', assigned_om: '' })
   const [newOM, setNewOM] = useState({ email: '', name: '' })
@@ -125,7 +120,7 @@ export default function AdminDashboard() {
   const loadData = async () => {
     const { data: adminsData } = await supabase.from('admin_users').select('*').order('created_at')
     const { data: customersData } = await supabase.from('customers').select('*').order('created_at', { ascending: false })
-    const { data: tasksData } = await supabase.from('tasks').select('*').order('sort_order')
+    const { data: tasksData } = await supabase.from('tasks').select('*').order('phase').order('sort_order')
     const { data: progressData } = await supabase.from('customer_progress').select('*')
     const { data: commentsData } = await supabase.from('task_comments').select('*').order('created_at', { ascending: false })
 
@@ -167,7 +162,8 @@ export default function AdminDashboard() {
       return {
         ...customer,
         progress: { completed, verified, total, percentage: total > 0 ? Math.round((completed / total) * 100) : 0, lastActivity: lastCompleted?.completed_at || null },
-        pendingVerification, unreadComments, customTaskCount, skippedTaskCount
+        pendingVerification, unreadComments, customTaskCount, skippedTaskCount,
+        hidden_phases: customer.hidden_phases || []
       }
     })
 
@@ -210,20 +206,15 @@ export default function AdminDashboard() {
     setSelectedCustomer(customer)
     
     const { data: tasksData } = await supabase
-      .from('tasks')
-      .select('*')
+      .from('tasks').select('*')
       .or(`customer_id.is.null,customer_id.eq.${customer.id}`)
-      .order('sort_order')
+      .order('phase').order('sort_order')
 
     const { data: progressData } = await supabase
-      .from('customer_progress')
-      .select('*')
-      .eq('customer_id', customer.id)
+      .from('customer_progress').select('*').eq('customer_id', customer.id)
 
     const { data: commentsData } = await supabase
-      .from('task_comments')
-      .select('*')
-      .eq('customer_id', customer.id)
+      .from('task_comments').select('*').eq('customer_id', customer.id)
       .order('created_at', { ascending: true })
 
     const tasksWithProgress: ProgressWithTask[] = (tasksData || []).map(task => {
@@ -252,13 +243,11 @@ export default function AdminDashboard() {
   }
 
   const openAddForm = () => {
-    console.log('Opening add form')
     setTaskForm(DEFAULT_TASK_FORM)
     setTaskEditor(prev => ({ ...prev, isFormOpen: true, editingTask: null }))
   }
 
   const openEditForm = (task: Task) => {
-    console.log('Opening edit form for', task.task_name)
     setTaskForm({
       phase: task.phase, phase_name: task.phase_name, task_name: task.task_name,
       description: task.description || '', owner: task.owner, est_time: task.est_time || '',
@@ -281,40 +270,74 @@ export default function AdminDashboard() {
   const saveTask = async () => {
     if (!taskForm.task_name.trim()) return
     setSavingTask(true)
-    const customerId = taskEditor.mode === 'customer' ? taskEditor.customer?.id : null
+    
+    try {
+      const customerId = taskEditor.mode === 'customer' ? taskEditor.customer?.id : null
 
-    if (taskEditor.editingTask) {
-      await supabase.from('tasks').update({
-        phase: taskForm.phase, phase_name: taskForm.phase_name, task_name: taskForm.task_name,
-        description: taskForm.description, owner: taskForm.owner, est_time: taskForm.est_time,
-        is_success_gate: taskForm.is_success_gate, unlocks_report: taskForm.unlocks_report || null,
-        requires_upload: taskForm.requires_upload
-      }).eq('id', taskEditor.editingTask.id)
-    } else {
-      const maxOrder = allTasks.filter(t => t.phase === taskForm.phase).reduce((max, t) => Math.max(max, t.sort_order), 0)
+      if (taskEditor.editingTask) {
+        // Update existing task
+        const { error } = await supabase.from('tasks').update({
+          phase: taskForm.phase, 
+          phase_name: taskForm.phase_name, 
+          task_name: taskForm.task_name,
+          description: taskForm.description, 
+          owner: taskForm.owner, 
+          est_time: taskForm.est_time,
+          is_success_gate: taskForm.is_success_gate, 
+          unlocks_report: taskForm.unlocks_report || null,
+          requires_upload: taskForm.requires_upload
+        }).eq('id', taskEditor.editingTask.id)
+        
+        if (error) {
+          console.error('Error updating task:', error)
+          alert('Failed to update task: ' + error.message)
+        }
+      } else {
+        // Create new task
+        const tasksInPhase = allTasks.filter(t => t.phase === taskForm.phase)
+        const maxOrder = tasksInPhase.length > 0 ? Math.max(...tasksInPhase.map(t => t.sort_order)) : 0
 
-      const { data: newTask } = await supabase.from('tasks').insert({
-        phase: taskForm.phase, phase_name: taskForm.phase_name, task_name: taskForm.task_name,
-        description: taskForm.description, owner: taskForm.owner, est_time: taskForm.est_time,
-        sort_order: maxOrder + 1, is_success_gate: taskForm.is_success_gate,
-        unlocks_report: taskForm.unlocks_report || null, requires_upload: taskForm.requires_upload,
-        customer_id: customerId
-      }).select().single()
+        const { data: newTask, error: taskError } = await supabase.from('tasks').insert({
+          phase: taskForm.phase, 
+          phase_name: taskForm.phase_name, 
+          task_name: taskForm.task_name,
+          description: taskForm.description, 
+          owner: taskForm.owner, 
+          est_time: taskForm.est_time,
+          sort_order: maxOrder + 1, 
+          is_success_gate: taskForm.is_success_gate,
+          unlocks_report: taskForm.unlocks_report || null, 
+          requires_upload: taskForm.requires_upload,
+          customer_id: customerId
+        }).select().single()
 
-      if (newTask) {
-        if (customerId) {
-          await supabase.from('customer_progress').insert({ customer_id: customerId, task_id: newTask.id })
-        } else {
-          const progressRecords = allCustomers.map(c => ({ customer_id: c.id, task_id: newTask.id }))
-          if (progressRecords.length > 0) await supabase.from('customer_progress').insert(progressRecords)
+        if (taskError) {
+          console.error('Error creating task:', taskError)
+          alert('Failed to create task: ' + taskError.message)
+        } else if (newTask) {
+          // Create progress records
+          if (customerId) {
+            // Custom task - only for this customer
+            await supabase.from('customer_progress').insert({ customer_id: customerId, task_id: newTask.id })
+          } else {
+            // Global task - for all customers
+            const progressRecords = allCustomers.map(c => ({ customer_id: c.id, task_id: newTask.id }))
+            if (progressRecords.length > 0) {
+              const { error: progressError } = await supabase.from('customer_progress').insert(progressRecords)
+              if (progressError) console.error('Error creating progress:', progressError)
+            }
+          }
         }
       }
-    }
 
+      closeForm()
+      await loadData()
+    } catch (err) {
+      console.error('Save error:', err)
+      alert('Failed to save task')
+    }
+    
     setSavingTask(false)
-    closeForm()
-    await loadData()
-    if (selectedCustomer) await loadCustomerDetails(selectedCustomer)
   }
 
   const deleteTask = async (taskId: string) => {
@@ -322,17 +345,16 @@ export default function AdminDashboard() {
     await supabase.from('customer_progress').delete().eq('task_id', taskId)
     await supabase.from('tasks').delete().eq('id', taskId)
     await loadData()
-    if (selectedCustomer) await loadCustomerDetails(selectedCustomer)
   }
 
   const toggleSkipTask = async (progressId: string, currentSkipped: boolean) => {
     await supabase.from('customer_progress').update({ is_skipped: !currentSkipped }).eq('id', progressId)
     await loadData()
-    if (selectedCustomer) await loadCustomerDetails(selectedCustomer)
   }
 
   const duplicateTaskForCustomer = async (task: Task, customerId: string) => {
-    const maxOrder = allTasks.filter(t => t.phase === task.phase).reduce((max, t) => Math.max(max, t.sort_order), 0)
+    const tasksInPhase = allTasks.filter(t => t.phase === task.phase)
+    const maxOrder = tasksInPhase.length > 0 ? Math.max(...tasksInPhase.map(t => t.sort_order)) : 0
     
     const { data: newTask } = await supabase.from('tasks').insert({
       phase: task.phase, phase_name: task.phase_name, task_name: `${task.task_name} (Custom)`,
@@ -345,9 +367,78 @@ export default function AdminDashboard() {
     if (newTask) {
       await supabase.from('customer_progress').insert({ customer_id: customerId, task_id: newTask.id })
     }
-
     await loadData()
-    if (selectedCustomer) await loadCustomerDetails(selectedCustomer)
+  }
+
+  // Reorder tasks
+  const moveTaskUp = async (task: Task) => {
+    setMovingTask(task.id)
+    const tasksInPhase = allTasks
+      .filter(t => t.phase === task.phase && (taskEditor.mode === 'global' ? !t.customer_id : (!t.customer_id || t.customer_id === taskEditor.customer?.id)))
+      .sort((a, b) => a.sort_order - b.sort_order)
+    
+    const currentIndex = tasksInPhase.findIndex(t => t.id === task.id)
+    if (currentIndex > 0) {
+      const prevTask = tasksInPhase[currentIndex - 1]
+      await supabase.from('tasks').update({ sort_order: prevTask.sort_order }).eq('id', task.id)
+      await supabase.from('tasks').update({ sort_order: task.sort_order }).eq('id', prevTask.id)
+      await loadData()
+    }
+    setMovingTask(null)
+  }
+
+  const moveTaskDown = async (task: Task) => {
+    setMovingTask(task.id)
+    const tasksInPhase = allTasks
+      .filter(t => t.phase === task.phase && (taskEditor.mode === 'global' ? !t.customer_id : (!t.customer_id || t.customer_id === taskEditor.customer?.id)))
+      .sort((a, b) => a.sort_order - b.sort_order)
+    
+    const currentIndex = tasksInPhase.findIndex(t => t.id === task.id)
+    if (currentIndex < tasksInPhase.length - 1) {
+      const nextTask = tasksInPhase[currentIndex + 1]
+      await supabase.from('tasks').update({ sort_order: nextTask.sort_order }).eq('id', task.id)
+      await supabase.from('tasks').update({ sort_order: task.sort_order }).eq('id', nextTask.id)
+      await loadData()
+    }
+    setMovingTask(null)
+  }
+
+  const moveTaskToPhase = async (task: Task, newPhase: number) => {
+    setMovingTask(task.id)
+    const phaseOption = PHASE_OPTIONS.find(p => p.value === newPhase)
+    const tasksInNewPhase = allTasks.filter(t => t.phase === newPhase)
+    const maxOrder = tasksInNewPhase.length > 0 ? Math.max(...tasksInNewPhase.map(t => t.sort_order)) : 0
+    
+    await supabase.from('tasks').update({ 
+      phase: newPhase, 
+      phase_name: phaseOption?.label || '',
+      sort_order: maxOrder + 1
+    }).eq('id', task.id)
+    
+    await loadData()
+    setMovingTask(null)
+  }
+
+  // Toggle phase visibility for customer
+  const togglePhaseVisibility = async (customerId: string, phase: number, currentHidden: boolean) => {
+    const customer = customers.find(c => c.id === customerId)
+    if (!customer) return
+    
+    const currentHiddenPhases = customer.hidden_phases || []
+    const newHiddenPhases = currentHidden 
+      ? currentHiddenPhases.filter(p => p !== phase)
+      : [...currentHiddenPhases, phase]
+    
+    await supabase.from('customers').update({ hidden_phases: newHiddenPhases }).eq('id', customerId)
+    await loadData()
+    
+    // Update taskEditor customer if open
+    if (taskEditor.customer?.id === customerId) {
+      setTaskEditor(prev => ({
+        ...prev,
+        customer: { ...prev.customer!, hidden_phases: newHiddenPhases }
+      }))
+    }
   }
 
   const verifyTask = async (progressId: string) => {
@@ -371,7 +462,20 @@ export default function AdminDashboard() {
 
   const addCommentToProgress = async (progressId: string, customerId: string) => {
     if (!currentUser || !newComment.trim()) return
-    await supabase.from('task_comments').insert({ progress_id: progressId, customer_id: customerId, author_email: currentUser.email, author_name: currentUser.name, author_role: currentUser.role, message: newComment.trim() })
+    
+    // Add comment
+    await supabase.from('task_comments').insert({ 
+      progress_id: progressId, 
+      customer_id: customerId, 
+      author_email: currentUser.email, 
+      author_name: currentUser.name, 
+      author_role: currentUser.role, 
+      message: newComment.trim() 
+    })
+    
+    // Mark as has unread reply for customer
+    await supabase.from('customer_progress').update({ has_unread_reply: true }).eq('id', progressId)
+    
     setNewComment(''); setReplyingTo(null)
     if (selectedCustomer) await loadCustomerDetails(selectedCustomer)
     await loadData()
@@ -446,8 +550,8 @@ export default function AdminDashboard() {
   if (error) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="bg-white p-8 rounded-lg shadow-lg text-center"><p className="text-red-600 mb-4">{error}</p><button onClick={() => router.push('/')} className="px-4 py-2 bg-blue-500 text-white rounded-lg">Back to Login</button></div></div>
 
   const editorTasks = taskEditor.mode === 'global' 
-    ? allTasks.filter(t => !t.customer_id)
-    : allTasks.filter(t => !t.customer_id || t.customer_id === taskEditor.customer?.id)
+    ? allTasks.filter(t => !t.customer_id).sort((a, b) => a.phase - b.phase || a.sort_order - b.sort_order)
+    : allTasks.filter(t => !t.customer_id || t.customer_id === taskEditor.customer?.id).sort((a, b) => a.phase - b.phase || a.sort_order - b.sort_order)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -520,10 +624,11 @@ export default function AdminDashboard() {
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {customer.customTaskCount > 0 && <span className="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">{customer.customTaskCount} custom</span>}
                       {customer.skippedTaskCount > 0 && <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full">{customer.skippedTaskCount} skipped</span>}
-                      {customer.customTaskCount === 0 && customer.skippedTaskCount === 0 && <span className="text-xs text-gray-400">Default</span>}
+                      {(customer.hidden_phases?.length || 0) > 0 && <span className="px-2 py-0.5 text-xs bg-orange-100 text-orange-700 rounded-full">{customer.hidden_phases?.length} hidden</span>}
+                      {customer.customTaskCount === 0 && customer.skippedTaskCount === 0 && (customer.hidden_phases?.length || 0) === 0 && <span className="text-xs text-gray-400">Default</span>}
                     </div>
                   </td>
                   <td className="px-6 py-4"><span className="text-sm text-gray-500">{formatDate(customer.progress.lastActivity)}</span></td>
@@ -565,17 +670,13 @@ export default function AdminDashboard() {
                   </div>
                   <p className="text-sm text-gray-500">
                     {taskEditor.mode === 'global' 
-                      ? 'These tasks apply to all customers by default'
-                      : 'Add custom tasks or skip global tasks for this customer'
+                      ? 'These tasks apply to all customers • Drag to reorder'
+                      : 'Add custom tasks, skip tasks, or hide phases for this customer'
                     }
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button 
-                    type="button"
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); openAddForm(); }} 
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-                  >
+                  <button type="button" onClick={openAddForm} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
                     <Plus size={18} /> Add {taskEditor.mode === 'customer' ? 'Custom ' : ''}Task
                   </button>
                   <button onClick={closeTaskEditor} className="p-2 hover:bg-gray-100 rounded-lg"><X size={20} /></button>
@@ -624,71 +725,129 @@ export default function AdminDashboard() {
                   </div>
                   <div className="flex justify-end gap-2 mt-4">
                     <button type="button" onClick={closeForm} className="px-4 py-2 border rounded-lg hover:bg-gray-50">Cancel</button>
-                    <button type="button" onClick={saveTask} disabled={!taskForm.task_name.trim() || savingTask} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2"><Save size={16} />{savingTask ? 'Saving...' : 'Save Task'}</button>
+                    <button type="button" onClick={saveTask} disabled={!taskForm.task_name.trim() || savingTask} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 flex items-center gap-2">
+                      <Save size={16} />{savingTask ? 'Saving...' : 'Save Task'}
+                    </button>
                   </div>
                 </div>
               )}
 
               {/* Task List */}
-              {groupAllTasksByPhase(editorTasks).map(([phase, group]) => (
-                <div key={phase} className="mb-6">
-                  <div className={`px-4 py-2 rounded-t-lg text-white ${getPhaseColor(Number(phase))}`}>
-                    <span className="font-semibold">{group.name}</span>
-                    <span className="ml-2 text-sm opacity-75">({group.tasks.length} tasks)</span>
-                  </div>
-                  <div className="border border-t-0 rounded-b-lg divide-y">
-                    {group.tasks.map((task) => {
-                      const isCustomTask = !!task.customer_id
-                      const progress = taskEditor.mode === 'customer' && taskEditor.customer 
-                        ? allProgress.find(p => p.task_id === task.id && p.customer_id === taskEditor.customer?.id)
-                        : null
-                      const isSkipped = progress?.is_skipped || false
+              {groupAllTasksByPhase(editorTasks).map(([phase, group]) => {
+                const phaseNum = Number(phase)
+                const isPhaseHidden = taskEditor.mode === 'customer' && taskEditor.customer?.hidden_phases?.includes(phaseNum)
+                const tasksInPhase = group.tasks.sort((a, b) => a.sort_order - b.sort_order)
+                
+                return (
+                  <div key={phase} className={`mb-6 ${isPhaseHidden ? 'opacity-60' : ''}`}>
+                    <div className={`px-4 py-2 rounded-t-lg text-white flex items-center justify-between ${getPhaseColor(phaseNum)}`}>
+                      <div>
+                        <span className="font-semibold">{group.name}</span>
+                        <span className="ml-2 text-sm opacity-75">({group.tasks.length} tasks)</span>
+                        {isPhaseHidden && <span className="ml-2 text-xs bg-white/20 px-2 py-0.5 rounded">Hidden from customer</span>}
+                      </div>
+                      {taskEditor.mode === 'customer' && taskEditor.customer && (
+                        <button 
+                          type="button"
+                          onClick={() => togglePhaseVisibility(taskEditor.customer!.id, phaseNum, isPhaseHidden || false)}
+                          className={`p-1.5 rounded ${isPhaseHidden ? 'bg-white/30 hover:bg-white/40' : 'hover:bg-white/20'}`}
+                          title={isPhaseHidden ? 'Show phase to customer' : 'Hide phase from customer'}
+                        >
+                          <EyeOff size={16} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="border border-t-0 rounded-b-lg divide-y">
+                      {tasksInPhase.map((task, idx) => {
+                        const isCustomTask = !!task.customer_id
+                        const progress = taskEditor.mode === 'customer' && taskEditor.customer 
+                          ? allProgress.find(p => p.task_id === task.id && p.customer_id === taskEditor.customer?.id)
+                          : null
+                        const isSkipped = progress?.is_skipped || false
+                        const isFirst = idx === 0
+                        const isLast = idx === tasksInPhase.length - 1
 
-                      return (
-                        <div key={task.id} className={`p-3 flex items-center gap-3 hover:bg-gray-50 ${isSkipped ? 'opacity-50 bg-gray-100' : ''}`}>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`font-medium ${isSkipped ? 'line-through text-gray-500' : 'text-gray-900'}`}>{task.task_name}</span>
-                              {isCustomTask && <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded">Custom</span>}
-                              {task.is_success_gate && <span className="px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">Gate</span>}
-                              {task.requires_upload && <span className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Upload</span>}
-                              {task.unlocks_report && <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded">Unlocks: {task.unlocks_report}</span>}
-                              {isSkipped && <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Skipped</span>}
+                        return (
+                          <div key={task.id} className={`p-3 flex items-center gap-3 hover:bg-gray-50 ${isSkipped ? 'opacity-50 bg-gray-100' : ''}`}>
+                            {/* Reorder buttons */}
+                            <div className="flex flex-col gap-0.5">
+                              <button 
+                                type="button"
+                                onClick={() => moveTaskUp(task)} 
+                                disabled={isFirst || movingTask === task.id}
+                                className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                                title="Move up"
+                              >
+                                <ArrowUp size={14} />
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={() => moveTaskDown(task)} 
+                                disabled={isLast || movingTask === task.id}
+                                className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                                title="Move down"
+                              >
+                                <ArrowDown size={14} />
+                              </button>
                             </div>
-                            <p className="text-sm text-gray-500">{task.description}</p>
+                            
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`font-medium ${isSkipped ? 'line-through text-gray-500' : 'text-gray-900'}`}>{task.task_name}</span>
+                                {isCustomTask && <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded">Custom</span>}
+                                {task.is_success_gate && <span className="px-1.5 py-0.5 text-xs bg-green-100 text-green-700 rounded">Gate</span>}
+                                {task.requires_upload && <span className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Upload</span>}
+                                {task.unlocks_report && <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded">Unlocks: {task.unlocks_report}</span>}
+                                {isSkipped && <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Skipped</span>}
+                              </div>
+                              <p className="text-sm text-gray-500">{task.description}</p>
+                            </div>
+                            
+                            <div className="flex items-center gap-1">
+                              {/* Move to phase dropdown */}
+                              <select 
+                                value={task.phase}
+                                onChange={(e) => moveTaskToPhase(task, Number(e.target.value))}
+                                className="text-xs border rounded px-1 py-1 text-gray-500 bg-white"
+                                title="Move to phase"
+                              >
+                                {PHASE_OPTIONS.map(p => (
+                                  <option key={p.value} value={p.value}>P{p.value}</option>
+                                ))}
+                              </select>
+                              
+                              {/* Customer mode: skip/unskip global tasks */}
+                              {taskEditor.mode === 'customer' && !isCustomTask && progress && (
+                                <button type="button" onClick={() => toggleSkipTask(progress.id, isSkipped)} className={`p-2 rounded-lg ${isSkipped ? 'text-green-500 hover:bg-green-50' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`} title={isSkipped ? 'Unskip Task' : 'Skip Task'}>
+                                  <SkipForward size={16} />
+                                </button>
+                              )}
+                              {/* Customer mode: duplicate global task for customization */}
+                              {taskEditor.mode === 'customer' && !isCustomTask && taskEditor.customer && (
+                                <button type="button" onClick={() => duplicateTaskForCustomer(task, taskEditor.customer!.id)} className="p-2 text-gray-400 hover:text-purple-500 hover:bg-purple-50 rounded-lg" title="Create Custom Copy">
+                                  <Copy size={16} />
+                                </button>
+                              )}
+                              {/* Edit task - global in global mode, or custom tasks in customer mode */}
+                              {(taskEditor.mode === 'global' || isCustomTask) && (
+                                <button type="button" onClick={() => openEditForm(task)} className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg" title="Edit Task">
+                                  <Pencil size={16} />
+                                </button>
+                              )}
+                              {/* Delete - global in global mode, custom in customer mode */}
+                              {(taskEditor.mode === 'global' || isCustomTask) && (
+                                <button type="button" onClick={() => deleteTask(task.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Delete Task">
+                                  <Trash2 size={16} />
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1">
-                            {/* Customer mode: skip/unskip global tasks */}
-                            {taskEditor.mode === 'customer' && !isCustomTask && progress && (
-                              <button type="button" onClick={() => toggleSkipTask(progress.id, isSkipped)} className={`p-2 rounded-lg ${isSkipped ? 'text-green-500 hover:bg-green-50' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`} title={isSkipped ? 'Unskip Task' : 'Skip Task'}>
-                                <SkipForward size={16} />
-                              </button>
-                            )}
-                            {/* Customer mode: duplicate global task for customization */}
-                            {taskEditor.mode === 'customer' && !isCustomTask && taskEditor.customer && (
-                              <button type="button" onClick={() => duplicateTaskForCustomer(task, taskEditor.customer!.id)} className="p-2 text-gray-400 hover:text-purple-500 hover:bg-purple-50 rounded-lg" title="Create Custom Copy">
-                                <Copy size={16} />
-                              </button>
-                            )}
-                            {/* Edit task - global in global mode, or custom tasks in customer mode */}
-                            {(taskEditor.mode === 'global' || isCustomTask) && (
-                              <button type="button" onClick={() => openEditForm(task)} className="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg" title="Edit Task">
-                                <Pencil size={16} />
-                              </button>
-                            )}
-                            {/* Delete - global in global mode, custom in customer mode */}
-                            {(taskEditor.mode === 'global' || isCustomTask) && (
-                              <button type="button" onClick={() => deleteTask(task.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg" title="Delete Task">
-                                <Trash2 size={16} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
