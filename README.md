@@ -141,3 +141,4 @@ craftable-onboarding/
 - No paid services required
 // Trigger redeploy
 Mon Feb 16 12:55:58 PST 2026
+# Force rebuild
