@@ -7,7 +7,7 @@ import {
   Users, CheckCircle2, Clock, AlertTriangle, LogOut, Plus, Search,
   ChevronDown, ChevronUp, X, Check, MessageSquare, Send, Download, 
   UserPlus, Settings, Eye, Shield, ListTodo, Pencil, Trash2, Save,
-  SkipForward, User, Copy, ArrowUp, ArrowDown, EyeOff, MoveVertical
+  SkipForward, User, Copy, ArrowUp, ArrowDown, EyeOff, GripVertical
 } from 'lucide-react'
 
 interface TaskComment {
@@ -291,6 +291,8 @@ export default function AdminDashboard() {
         if (error) {
           console.error('Error updating task:', error)
           alert('Failed to update task: ' + error.message)
+          setSavingTask(false)
+          return
         }
       } else {
         // Create new task
@@ -301,30 +303,42 @@ export default function AdminDashboard() {
           phase: taskForm.phase, 
           phase_name: taskForm.phase_name, 
           task_name: taskForm.task_name,
-          description: taskForm.description, 
+          description: taskForm.description || '', 
           owner: taskForm.owner, 
-          est_time: taskForm.est_time,
+          est_time: taskForm.est_time || '',
           sort_order: maxOrder + 1, 
           is_success_gate: taskForm.is_success_gate,
           unlocks_report: taskForm.unlocks_report || null, 
           requires_upload: taskForm.requires_upload,
-          customer_id: customerId
+          customer_id: customerId || null
         }).select().single()
 
         if (taskError) {
           console.error('Error creating task:', taskError)
           alert('Failed to create task: ' + taskError.message)
-        } else if (newTask) {
+          setSavingTask(false)
+          return
+        }
+        
+        if (newTask) {
           // Create progress records
           if (customerId) {
             // Custom task - only for this customer
-            await supabase.from('customer_progress').insert({ customer_id: customerId, task_id: newTask.id })
+            const { error: progressError } = await supabase.from('customer_progress').insert({ 
+              customer_id: customerId, 
+              task_id: newTask.id 
+            })
+            if (progressError) {
+              console.error('Error creating progress:', progressError)
+            }
           } else {
             // Global task - for all customers
-            const progressRecords = allCustomers.map(c => ({ customer_id: c.id, task_id: newTask.id }))
-            if (progressRecords.length > 0) {
+            if (allCustomers.length > 0) {
+              const progressRecords = allCustomers.map(c => ({ customer_id: c.id, task_id: newTask.id }))
               const { error: progressError } = await supabase.from('customer_progress').insert(progressRecords)
-              if (progressError) console.error('Error creating progress:', progressError)
+              if (progressError) {
+                console.error('Error creating progress:', progressError)
+              }
             }
           }
         }
@@ -334,7 +348,7 @@ export default function AdminDashboard() {
       await loadData()
     } catch (err) {
       console.error('Save error:', err)
-      alert('Failed to save task')
+      alert('Failed to save task: ' + String(err))
     }
     
     setSavingTask(false)
@@ -356,13 +370,18 @@ export default function AdminDashboard() {
     const tasksInPhase = allTasks.filter(t => t.phase === task.phase)
     const maxOrder = tasksInPhase.length > 0 ? Math.max(...tasksInPhase.map(t => t.sort_order)) : 0
     
-    const { data: newTask } = await supabase.from('tasks').insert({
+    const { data: newTask, error } = await supabase.from('tasks').insert({
       phase: task.phase, phase_name: task.phase_name, task_name: `${task.task_name} (Custom)`,
-      description: task.description, owner: task.owner, est_time: task.est_time,
+      description: task.description || '', owner: task.owner, est_time: task.est_time || '',
       sort_order: maxOrder + 1, is_success_gate: task.is_success_gate,
       unlocks_report: task.unlocks_report, requires_upload: task.requires_upload,
       customer_id: customerId
     }).select().single()
+
+    if (error) {
+      alert('Failed to duplicate task: ' + error.message)
+      return
+    }
 
     if (newTask) {
       await supabase.from('customer_progress').insert({ customer_id: customerId, task_id: newTask.id })
@@ -370,52 +389,68 @@ export default function AdminDashboard() {
     await loadData()
   }
 
-  // Reorder tasks
-  const moveTaskUp = async (task: Task) => {
+  // Reorder tasks - simplified and fixed
+  const moveTaskInDirection = async (task: Task, direction: 'up' | 'down') => {
     setMovingTask(task.id)
-    const tasksInPhase = allTasks
-      .filter(t => t.phase === task.phase && (taskEditor.mode === 'global' ? !t.customer_id : (!t.customer_id || t.customer_id === taskEditor.customer?.id)))
-      .sort((a, b) => a.sort_order - b.sort_order)
     
-    const currentIndex = tasksInPhase.findIndex(t => t.id === task.id)
-    if (currentIndex > 0) {
-      const prevTask = tasksInPhase[currentIndex - 1]
-      await supabase.from('tasks').update({ sort_order: prevTask.sort_order }).eq('id', task.id)
-      await supabase.from('tasks').update({ sort_order: task.sort_order }).eq('id', prevTask.id)
+    try {
+      // Get tasks in same phase, sorted by sort_order
+      const tasksInPhase = allTasks
+        .filter(t => t.phase === task.phase && (taskEditor.mode === 'global' ? !t.customer_id : true))
+        .sort((a, b) => a.sort_order - b.sort_order)
+      
+      const currentIndex = tasksInPhase.findIndex(t => t.id === task.id)
+      
+      if (direction === 'up' && currentIndex > 0) {
+        const prevTask = tasksInPhase[currentIndex - 1]
+        // Swap sort_order values
+        const tempOrder = task.sort_order
+        await supabase.from('tasks').update({ sort_order: prevTask.sort_order }).eq('id', task.id)
+        await supabase.from('tasks').update({ sort_order: tempOrder }).eq('id', prevTask.id)
+      } else if (direction === 'down' && currentIndex < tasksInPhase.length - 1) {
+        const nextTask = tasksInPhase[currentIndex + 1]
+        // Swap sort_order values
+        const tempOrder = task.sort_order
+        await supabase.from('tasks').update({ sort_order: nextTask.sort_order }).eq('id', task.id)
+        await supabase.from('tasks').update({ sort_order: tempOrder }).eq('id', nextTask.id)
+      }
+      
       await loadData()
+    } catch (err) {
+      console.error('Move error:', err)
+      alert('Failed to move task')
     }
-    setMovingTask(null)
-  }
-
-  const moveTaskDown = async (task: Task) => {
-    setMovingTask(task.id)
-    const tasksInPhase = allTasks
-      .filter(t => t.phase === task.phase && (taskEditor.mode === 'global' ? !t.customer_id : (!t.customer_id || t.customer_id === taskEditor.customer?.id)))
-      .sort((a, b) => a.sort_order - b.sort_order)
     
-    const currentIndex = tasksInPhase.findIndex(t => t.id === task.id)
-    if (currentIndex < tasksInPhase.length - 1) {
-      const nextTask = tasksInPhase[currentIndex + 1]
-      await supabase.from('tasks').update({ sort_order: nextTask.sort_order }).eq('id', task.id)
-      await supabase.from('tasks').update({ sort_order: task.sort_order }).eq('id', nextTask.id)
-      await loadData()
-    }
     setMovingTask(null)
   }
 
   const moveTaskToPhase = async (task: Task, newPhase: number) => {
+    if (task.phase === newPhase) return
+    
     setMovingTask(task.id)
-    const phaseOption = PHASE_OPTIONS.find(p => p.value === newPhase)
-    const tasksInNewPhase = allTasks.filter(t => t.phase === newPhase)
-    const maxOrder = tasksInNewPhase.length > 0 ? Math.max(...tasksInNewPhase.map(t => t.sort_order)) : 0
     
-    await supabase.from('tasks').update({ 
-      phase: newPhase, 
-      phase_name: phaseOption?.label || '',
-      sort_order: maxOrder + 1
-    }).eq('id', task.id)
+    try {
+      const phaseOption = PHASE_OPTIONS.find(p => p.value === newPhase)
+      const tasksInNewPhase = allTasks.filter(t => t.phase === newPhase)
+      const maxOrder = tasksInNewPhase.length > 0 ? Math.max(...tasksInNewPhase.map(t => t.sort_order)) : 0
+      
+      const { error } = await supabase.from('tasks').update({ 
+        phase: newPhase, 
+        phase_name: phaseOption?.label || `Phase ${newPhase}`,
+        sort_order: maxOrder + 1
+      }).eq('id', task.id)
+      
+      if (error) {
+        console.error('Move to phase error:', error)
+        alert('Failed to move task: ' + error.message)
+      } else {
+        await loadData()
+      }
+    } catch (err) {
+      console.error('Move error:', err)
+      alert('Failed to move task')
+    }
     
-    await loadData()
     setMovingTask(null)
   }
 
@@ -670,7 +705,7 @@ export default function AdminDashboard() {
                   </div>
                   <p className="text-sm text-gray-500">
                     {taskEditor.mode === 'global' 
-                      ? 'These tasks apply to all customers • Drag to reorder'
+                      ? 'These tasks apply to all customers • Use arrows to reorder'
                       : 'Add custom tasks, skip tasks, or hide phases for this customer'
                     }
                   </p>
@@ -766,25 +801,26 @@ export default function AdminDashboard() {
                         const isSkipped = progress?.is_skipped || false
                         const isFirst = idx === 0
                         const isLast = idx === tasksInPhase.length - 1
+                        const isMoving = movingTask === task.id
 
                         return (
-                          <div key={task.id} className={`p-3 flex items-center gap-3 hover:bg-gray-50 ${isSkipped ? 'opacity-50 bg-gray-100' : ''}`}>
+                          <div key={task.id} className={`p-3 flex items-center gap-3 hover:bg-gray-50 ${isSkipped ? 'opacity-50 bg-gray-100' : ''} ${isMoving ? 'bg-blue-50' : ''}`}>
                             {/* Reorder buttons */}
                             <div className="flex flex-col gap-0.5">
                               <button 
                                 type="button"
-                                onClick={() => moveTaskUp(task)} 
-                                disabled={isFirst || movingTask === task.id}
-                                className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                                onClick={() => moveTaskInDirection(task, 'up')}
+                                disabled={isFirst || isMoving}
+                                className={`p-1 rounded transition-colors ${isFirst || isMoving ? 'text-gray-200 cursor-not-allowed' : 'text-gray-400 hover:text-blue-500 hover:bg-blue-100'}`}
                                 title="Move up"
                               >
                                 <ArrowUp size={14} />
                               </button>
                               <button 
                                 type="button"
-                                onClick={() => moveTaskDown(task)} 
-                                disabled={isLast || movingTask === task.id}
-                                className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                                onClick={() => moveTaskInDirection(task, 'down')}
+                                disabled={isLast || isMoving}
+                                className={`p-1 rounded transition-colors ${isLast || isMoving ? 'text-gray-200 cursor-not-allowed' : 'text-gray-400 hover:text-blue-500 hover:bg-blue-100'}`}
                                 title="Move down"
                               >
                                 <ArrowDown size={14} />
@@ -800,7 +836,7 @@ export default function AdminDashboard() {
                                 {task.unlocks_report && <span className="px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded">Unlocks: {task.unlocks_report}</span>}
                                 {isSkipped && <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Skipped</span>}
                               </div>
-                              <p className="text-sm text-gray-500">{task.description}</p>
+                              {task.description && <p className="text-sm text-gray-500 mt-1">{task.description}</p>}
                             </div>
                             
                             <div className="flex items-center gap-1">
@@ -808,11 +844,12 @@ export default function AdminDashboard() {
                               <select 
                                 value={task.phase}
                                 onChange={(e) => moveTaskToPhase(task, Number(e.target.value))}
-                                className="text-xs border rounded px-1 py-1 text-gray-500 bg-white"
+                                disabled={isMoving}
+                                className="text-xs border rounded px-2 py-1 text-gray-600 bg-white cursor-pointer hover:border-blue-400"
                                 title="Move to phase"
                               >
                                 {PHASE_OPTIONS.map(p => (
-                                  <option key={p.value} value={p.value}>P{p.value}</option>
+                                  <option key={p.value} value={p.value}>Phase {p.value}</option>
                                 ))}
                               </select>
                               
