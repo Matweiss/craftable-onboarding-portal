@@ -23,6 +23,7 @@ interface TaskComment {
 interface ProgressWithTask extends CustomerProgress {
   task: Task
   comments: TaskComment[]
+  customer?: Customer
 }
 
 interface CustomerWithProgress extends Customer {
@@ -46,6 +47,13 @@ interface OMUser {
   customer_count?: number
 }
 
+interface PendingItem {
+  progress: CustomerProgress
+  task: Task
+  customer: Customer
+  comments: TaskComment[]
+}
+
 export default function AdminDashboard() {
   const router = useRouter()
   const [currentUser, setCurrentUser] = useState<{ email: string; name: string; role: string } | null>(null)
@@ -53,6 +61,12 @@ export default function AdminDashboard() {
   const [omUsers, setOmUsers] = useState<OMUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  
+  // All data for quick actions
+  const [allTasks, setAllTasks] = useState<Task[]>([])
+  const [allProgress, setAllProgress] = useState<CustomerProgress[]>([])
+  const [allComments, setAllComments] = useState<TaskComment[]>([])
+  const [allCustomers, setAllCustomers] = useState<Customer[]>([])
   
   // UI State
   const [searchQuery, setSearchQuery] = useState('')
@@ -63,6 +77,12 @@ export default function AdminDashboard() {
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithProgress | null>(null)
   const [customerTasks, setCustomerTasks] = useState<ProgressWithTask[]>([])
   const [expandedPhases, setExpandedPhases] = useState<number[]>([0, 1, 2, 3, 4])
+  
+  // Quick Action Panels
+  const [showVerificationPanel, setShowVerificationPanel] = useState(false)
+  const [showCommentsPanel, setShowCommentsPanel] = useState(false)
+  const [showActivePanel, setShowActivePanel] = useState(false)
+  const [showCompletedPanel, setShowCompletedPanel] = useState(false)
   
   // Form State
   const [newCustomer, setNewCustomer] = useState({ name: '', email: '', company: '', assigned_om: '' })
@@ -136,6 +156,12 @@ export default function AdminDashboard() {
       .select('*')
       .order('created_at', { ascending: false })
 
+    // Store raw data for quick actions
+    setAllTasks(tasksData || [])
+    setAllProgress(progressData || [])
+    setAllComments(commentsData || [])
+    setAllCustomers(customersData || [])
+
     // Calculate customer counts for each OM
     const omWithCounts = (adminsData || []).map(admin => ({
       ...admin,
@@ -180,10 +206,63 @@ export default function AdminDashboard() {
     setLoading(false)
   }
 
+  // Get all pending verification items
+  const getPendingVerifications = (): PendingItem[] => {
+    const pending: PendingItem[] = []
+    allProgress.filter(p => p.completed && !p.verified).forEach(progress => {
+      const task = allTasks.find(t => t.id === progress.task_id)
+      const customer = allCustomers.find(c => c.id === progress.customer_id)
+      const comments = allComments.filter(c => c.progress_id === progress.id)
+      if (task && customer) {
+        pending.push({ progress, task, customer, comments })
+      }
+    })
+    return pending.sort((a, b) => 
+      new Date(b.progress.completed_at || 0).getTime() - new Date(a.progress.completed_at || 0).getTime()
+    )
+  }
+
+  // Get all unread comments (customer comments without admin reply)
+  const getUnreadComments = (): { comment: TaskComment; task: Task; customer: Customer; progress: CustomerProgress }[] => {
+    const unread: { comment: TaskComment; task: Task; customer: Customer; progress: CustomerProgress }[] = []
+    
+    // Group comments by progress_id
+    const commentsByProgress: Record<string, TaskComment[]> = {}
+    allComments.forEach(c => {
+      if (!commentsByProgress[c.progress_id]) {
+        commentsByProgress[c.progress_id] = []
+      }
+      commentsByProgress[c.progress_id].push(c)
+    })
+
+    // Find customer comments without admin reply after them
+    Object.entries(commentsByProgress).forEach(([progressId, comments]) => {
+      const sorted = comments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      
+      sorted.forEach((comment, idx) => {
+        if (comment.author_role === 'customer') {
+          // Check if there's an admin/om reply after this comment
+          const hasReply = sorted.slice(idx + 1).some(c => c.author_role !== 'customer')
+          if (!hasReply) {
+            const progress = allProgress.find(p => p.id === progressId)
+            const task = allTasks.find(t => progress && t.id === progress.task_id)
+            const customer = allCustomers.find(c => c.id === comment.customer_id)
+            if (progress && task && customer) {
+              unread.push({ comment, task, customer, progress })
+            }
+          }
+        }
+      })
+    })
+
+    return unread.sort((a, b) => 
+      new Date(b.comment.created_at).getTime() - new Date(a.comment.created_at).getTime()
+    )
+  }
+
   const loadCustomerDetails = async (customer: CustomerWithProgress) => {
     setSelectedCustomer(customer)
     
-    // Get tasks with progress and comments for this customer
     const { data: tasksData } = await supabase
       .from('tasks')
       .select('*')
@@ -209,7 +288,7 @@ export default function AdminDashboard() {
         task,
         comments
       }
-    }).filter(t => t.id) // Only include tasks with progress records
+    }).filter(t => t.id)
 
     setCustomerTasks(tasksWithProgress)
   }
@@ -232,6 +311,23 @@ export default function AdminDashboard() {
     await loadData()
   }
 
+  const verifyAllForCustomer = async (customerId: string) => {
+    if (!currentUser) return
+
+    await supabase
+      .from('customer_progress')
+      .update({
+        verified: true,
+        verified_at: new Date().toISOString(),
+        verified_by: currentUser.name
+      })
+      .eq('customer_id', customerId)
+      .eq('completed', true)
+      .eq('verified', false)
+
+    await loadData()
+  }
+
   const unverifyTask = async (progressId: string) => {
     await supabase
       .from('customer_progress')
@@ -248,7 +344,7 @@ export default function AdminDashboard() {
     await loadData()
   }
 
-  const addComment = async (progressId: string, customerId: string) => {
+  const addCommentToProgress = async (progressId: string, customerId: string) => {
     if (!currentUser || !newComment.trim()) return
 
     await supabase
@@ -268,6 +364,7 @@ export default function AdminDashboard() {
     if (selectedCustomer) {
       await loadCustomerDetails(selectedCustomer)
     }
+    await loadData()
   }
 
   const addCustomer = async (e: React.FormEvent) => {
@@ -344,7 +441,7 @@ export default function AdminDashboard() {
     active: customers.filter(c => c.progress.percentage > 0 && c.progress.percentage < 100).length,
     completed: customers.filter(c => c.progress.percentage === 100).length,
     pendingVerification: customers.reduce((acc, c) => acc + c.pendingVerification, 0),
-    unreadComments: customers.reduce((acc, c) => acc + c.unreadComments, 0)
+    unreadComments: getUnreadComments().length
   }
 
   const getProgressColor = (percentage: number) => {
@@ -402,6 +499,9 @@ export default function AdminDashboard() {
     )
   }
 
+  const pendingVerifications = getPendingVerifications()
+  const unreadComments = getUnreadComments()
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -434,9 +534,12 @@ export default function AdminDashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Stats */}
+        {/* Clickable Stats */}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
-          <div className="bg-white rounded-xl shadow-sm border p-6">
+          <button
+            onClick={() => { setSearchQuery(''); setFilterOM('all'); }}
+            className="bg-white rounded-xl shadow-sm border p-6 hover:shadow-md transition-all text-left"
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-blue-100 rounded-lg">
                 <Users className="w-6 h-6 text-blue-500" />
@@ -446,9 +549,12 @@ export default function AdminDashboard() {
                 <p className="text-sm text-gray-500">Total Customers</p>
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl shadow-sm border p-6">
+          <button
+            onClick={() => setShowActivePanel(true)}
+            className="bg-white rounded-xl shadow-sm border p-6 hover:shadow-md hover:border-orange-300 transition-all text-left"
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-orange-100 rounded-lg">
                 <Clock className="w-6 h-6 text-orange-500" />
@@ -458,9 +564,12 @@ export default function AdminDashboard() {
                 <p className="text-sm text-gray-500">In Progress</p>
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl shadow-sm border p-6">
+          <button
+            onClick={() => setShowCompletedPanel(true)}
+            className="bg-white rounded-xl shadow-sm border p-6 hover:shadow-md hover:border-green-300 transition-all text-left"
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-green-100 rounded-lg">
                 <CheckCircle2 className="w-6 h-6 text-green-500" />
@@ -470,9 +579,14 @@ export default function AdminDashboard() {
                 <p className="text-sm text-gray-500">Completed</p>
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-xl shadow-sm border p-6">
+          <button
+            onClick={() => setShowVerificationPanel(true)}
+            className={`bg-white rounded-xl shadow-sm border p-6 hover:shadow-md transition-all text-left ${
+              stats.pendingVerification > 0 ? 'border-yellow-300 hover:border-yellow-400' : ''
+            }`}
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-yellow-100 rounded-lg">
                 <AlertTriangle className="w-6 h-6 text-yellow-500" />
@@ -482,9 +596,17 @@ export default function AdminDashboard() {
                 <p className="text-sm text-gray-500">Needs Verification</p>
               </div>
             </div>
-          </div>
+            {stats.pendingVerification > 0 && (
+              <p className="text-xs text-yellow-600 mt-2">Click to review →</p>
+            )}
+          </button>
 
-          <div className="bg-white rounded-xl shadow-sm border p-6">
+          <button
+            onClick={() => setShowCommentsPanel(true)}
+            className={`bg-white rounded-xl shadow-sm border p-6 hover:shadow-md transition-all text-left ${
+              stats.unreadComments > 0 ? 'border-purple-300 hover:border-purple-400' : ''
+            }`}
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-purple-100 rounded-lg">
                 <MessageSquare className="w-6 h-6 text-purple-500" />
@@ -494,7 +616,10 @@ export default function AdminDashboard() {
                 <p className="text-sm text-gray-500">New Comments</p>
               </div>
             </div>
-          </div>
+            {stats.unreadComments > 0 && (
+              <p className="text-xs text-purple-600 mt-2">Click to reply →</p>
+            )}
+          </button>
         </div>
 
         {/* Filters & Actions */}
@@ -609,6 +734,267 @@ export default function AdminDashboard() {
         </div>
       </main>
 
+      {/* Verification Panel */}
+      {showVerificationPanel && (
+        <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowVerificationPanel(false)}>
+          <div 
+            className="absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-yellow-50 border-b px-6 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Pending Verifications</h2>
+                <p className="text-sm text-gray-500">{pendingVerifications.length} tasks awaiting verification</p>
+              </div>
+              <button onClick={() => setShowVerificationPanel(false)} className="p-2 hover:bg-yellow-100 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {pendingVerifications.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <CheckCircle2 className="w-12 h-12 mx-auto mb-4 text-green-500" />
+                  <p>All caught up! No pending verifications.</p>
+                </div>
+              ) : (
+                pendingVerifications.map((item) => (
+                  <div key={item.progress.id} className="bg-white border rounded-lg p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                            {item.customer.name}
+                          </span>
+                          <span className={`text-xs px-2 py-0.5 rounded ${getPhaseColor(item.task.phase)} text-white`}>
+                            Phase {item.task.phase}
+                          </span>
+                        </div>
+                        <h4 className="font-medium text-gray-900">{item.task.task_name}</h4>
+                        <p className="text-sm text-gray-500 mt-1">{item.task.description}</p>
+                        {item.progress.completed_at && (
+                          <p className="text-xs text-gray-400 mt-2">
+                            Completed: {new Date(item.progress.completed_at).toLocaleString()}
+                          </p>
+                        )}
+                        
+                        {/* Show files if any */}
+                        {item.progress.files && (item.progress.files as any[]).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {(item.progress.files as any[]).map((file, idx) => (
+                              <a
+                                key={idx}
+                                href={file.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                              >
+                                <Download size={12} />
+                                {file.name}
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => verifyTask(item.progress.id)}
+                        className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <Check size={16} /> Verify
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Comments Panel */}
+      {showCommentsPanel && (
+        <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowCommentsPanel(false)}>
+          <div 
+            className="absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-purple-50 border-b px-6 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">New Comments</h2>
+                <p className="text-sm text-gray-500">{unreadComments.length} comments need response</p>
+              </div>
+              <button onClick={() => setShowCommentsPanel(false)} className="p-2 hover:bg-purple-100 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {unreadComments.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <MessageSquare className="w-12 h-12 mx-auto mb-4 text-purple-500" />
+                  <p>All caught up! No new comments.</p>
+                </div>
+              ) : (
+                unreadComments.map(({ comment, task, customer, progress }) => (
+                  <div key={comment.id} className="bg-white border rounded-lg p-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                        {customer.name}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        on "{task.task_name}"
+                      </span>
+                    </div>
+                    
+                    <div className="bg-gray-50 rounded-lg p-3 mb-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium text-sm">{comment.author_name || customer.name}</span>
+                        <span className="text-xs text-gray-400">
+                          {new Date(comment.created_at).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="text-gray-700">{comment.message}</p>
+                    </div>
+
+                    {replyingTo === comment.id ? (
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={newComment}
+                          onChange={(e) => setNewComment(e.target.value)}
+                          placeholder="Write a reply..."
+                          className="flex-1 text-sm p-2 border rounded-lg"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              addCommentToProgress(progress.id, customer.id)
+                            }
+                          }}
+                        />
+                        <button
+                          onClick={() => addCommentToProgress(progress.id, customer.id)}
+                          className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+                        >
+                          <Send size={16} />
+                        </button>
+                        <button
+                          onClick={() => { setReplyingTo(null); setNewComment(''); }}
+                          className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setReplyingTo(comment.id)}
+                        className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1"
+                      >
+                        <Send size={14} /> Reply
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Active Customers Panel */}
+      {showActivePanel && (
+        <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowActivePanel(false)}>
+          <div 
+            className="absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-orange-50 border-b px-6 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Active Customers</h2>
+                <p className="text-sm text-gray-500">{stats.active} customers in progress</p>
+              </div>
+              <button onClick={() => setShowActivePanel(false)} className="p-2 hover:bg-orange-100 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-3">
+              {customers.filter(c => c.progress.percentage > 0 && c.progress.percentage < 100).map(customer => (
+                <div 
+                  key={customer.id} 
+                  className="bg-white border rounded-lg p-4 shadow-sm hover:shadow-md cursor-pointer transition-all"
+                  onClick={() => { setShowActivePanel(false); loadCustomerDetails(customer); }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-medium text-gray-900">{customer.name}</h4>
+                      <p className="text-sm text-gray-500">{customer.email}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-orange-500">{customer.progress.percentage}%</p>
+                      <p className="text-xs text-gray-400">{customer.progress.completed}/{customer.progress.total} tasks</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 w-full bg-gray-200 rounded-full h-2">
+                    <div className="h-full bg-orange-500 rounded-full" style={{ width: `${customer.progress.percentage}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Completed Customers Panel */}
+      {showCompletedPanel && (
+        <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowCompletedPanel(false)}>
+          <div 
+            className="absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-green-50 border-b px-6 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Completed Customers</h2>
+                <p className="text-sm text-gray-500">{stats.completed} customers finished onboarding</p>
+              </div>
+              <button onClick={() => setShowCompletedPanel(false)} className="p-2 hover:bg-green-100 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-3">
+              {customers.filter(c => c.progress.percentage === 100).length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <Clock className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                  <p>No completed customers yet.</p>
+                </div>
+              ) : (
+                customers.filter(c => c.progress.percentage === 100).map(customer => (
+                  <div 
+                    key={customer.id} 
+                    className="bg-white border border-green-200 rounded-lg p-4 shadow-sm hover:shadow-md cursor-pointer transition-all"
+                    onClick={() => { setShowCompletedPanel(false); loadCustomerDetails(customer); }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <CheckCircle2 className="w-8 h-8 text-green-500" />
+                        <div>
+                          <h4 className="font-medium text-gray-900">{customer.name}</h4>
+                          <p className="text-sm text-gray-500">{customer.email}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-medium text-green-600">100% Complete</p>
+                        <p className="text-xs text-gray-400">{customer.progress.verified}/{customer.progress.total} verified</p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Customer Detail Slideout */}
       {selectedCustomer && (
         <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setSelectedCustomer(null)}>
@@ -621,9 +1007,19 @@ export default function AdminDashboard() {
                 <h2 className="text-xl font-bold text-gray-900">{selectedCustomer.name}</h2>
                 <p className="text-sm text-gray-500">{selectedCustomer.email}</p>
               </div>
-              <button onClick={() => setSelectedCustomer(null)} className="p-2 hover:bg-gray-100 rounded-lg">
-                <X size={20} />
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedCustomer.pendingVerification > 0 && (
+                  <button
+                    onClick={() => verifyAllForCustomer(selectedCustomer.id)}
+                    className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm flex items-center gap-1"
+                  >
+                    <Check size={16} /> Verify All ({selectedCustomer.pendingVerification})
+                  </button>
+                )}
+                <button onClick={() => setSelectedCustomer(null)} className="p-2 hover:bg-gray-100 rounded-lg">
+                  <X size={20} />
+                </button>
+              </div>
             </div>
 
             <div className="p-6">
@@ -681,7 +1077,6 @@ export default function AdminDashboard() {
                                 )}
                               </div>
                               
-                              {/* Timestamps */}
                               {item.completed_at && (
                                 <p className="text-xs text-gray-500 mt-1">
                                   Completed: {new Date(item.completed_at).toLocaleString()}
@@ -691,7 +1086,6 @@ export default function AdminDashboard() {
                                 </p>
                               )}
 
-                              {/* Files */}
                               {item.files && (item.files as any[]).length > 0 && (
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   {(item.files as any[]).map((file, idx) => (
@@ -709,7 +1103,6 @@ export default function AdminDashboard() {
                                 </div>
                               )}
 
-                              {/* Comments */}
                               {item.comments.length > 0 && (
                                 <div className="mt-3 space-y-2">
                                   {item.comments.map((comment) => (
@@ -736,7 +1129,6 @@ export default function AdminDashboard() {
                                 </div>
                               )}
 
-                              {/* Reply Box */}
                               {replyingTo === item.id ? (
                                 <div className="mt-2 flex gap-2">
                                   <input
@@ -745,10 +1137,10 @@ export default function AdminDashboard() {
                                     onChange={(e) => setNewComment(e.target.value)}
                                     placeholder="Write a reply..."
                                     className="flex-1 text-sm p-2 border rounded-lg"
-                                    onKeyDown={(e) => e.key === 'Enter' && addComment(item.id, selectedCustomer.id)}
+                                    onKeyDown={(e) => e.key === 'Enter' && addCommentToProgress(item.id, selectedCustomer.id)}
                                   />
                                   <button
-                                    onClick={() => addComment(item.id, selectedCustomer.id)}
+                                    onClick={() => addCommentToProgress(item.id, selectedCustomer.id)}
                                     className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
                                   >
                                     <Send size={16} />
@@ -770,7 +1162,6 @@ export default function AdminDashboard() {
                               )}
                             </div>
 
-                            {/* Verification Button */}
                             {item.completed && (
                               <div>
                                 {item.verified ? (
@@ -878,7 +1269,6 @@ export default function AdminDashboard() {
               </button>
             </div>
 
-            {/* Current OMs */}
             <div className="space-y-2 mb-6">
               {omUsers.map(om => (
                 <div key={om.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -912,7 +1302,6 @@ export default function AdminDashboard() {
               ))}
             </div>
 
-            {/* Add New OM */}
             {showAddOM ? (
               <form onSubmit={addOM} className="space-y-3 p-4 bg-blue-50 rounded-lg">
                 <h4 className="font-medium text-gray-900">Add New OM</h4>
@@ -933,7 +1322,7 @@ export default function AdminDashboard() {
                   className="w-full px-3 py-2 border rounded-lg text-sm"
                 />
                 <p className="text-xs text-gray-500">
-                  Note: They'll need to create a login with this email in Supabase Auth to access the portal.
+                  Note: Create a user in Supabase Auth with this email for them to log in.
                 </p>
                 <div className="flex gap-2">
                   <button
