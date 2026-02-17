@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { supabase, Customer, Task, CustomerProgress, Report } from '@/lib/supabase'
 import { 
@@ -338,7 +339,14 @@ export default function CustomerDashboard() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-gray-800">craftable</h1>
+              <Image 
+              src="/craftable-logo.png" 
+              alt="Craftable" 
+              width={160} 
+              height={48} 
+              className="h-10 w-auto"
+              priority
+            />
               <p className="text-sm text-gray-500">Onboarding Portal</p>
             </div>
             

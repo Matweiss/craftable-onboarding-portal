@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
@@ -72,7 +73,14 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-craftable-navy to-craftable-blue">
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-craftable-navy">craftable</h1>
+          <Image 
+              src="/craftable-logo.png" 
+              alt="Craftable" 
+              width={200} 
+              height={60} 
+              className="mx-auto mb-2"
+              priority
+            />
           <p className="text-gray-500 mt-2">Onboarding Portal</p>
         </div>
 
