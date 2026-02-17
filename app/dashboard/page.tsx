@@ -480,6 +480,21 @@ export default function CustomerDashboard() {
                               )}
                             </div>
                             <p className="text-sm text-gray-500 mt-1">{task.description}</p>
+                          
+                          {task.help_url && (
+                            <a 
+                              href={task.help_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 mt-1 group"
+                            >
+                              <BookOpen size={12} className="group-hover:scale-110 transition-transform" />
+                              <span className="border-b border-transparent group-hover:border-blue-600 transition-colors">
+                                Learning Center
+                              </span>
+                              <ExternalLink size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </a>
+                          )}
                             
                             <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
                               <span className="flex items-center gap-1">
