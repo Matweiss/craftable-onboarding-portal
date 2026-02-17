@@ -433,9 +433,8 @@ export default function AdminDashboard() {
   if (error) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="bg-white p-8 rounded-lg shadow-lg text-center"><p className="text-red-600 mb-4">{error}</p><button onClick={() => router.push('/')} className="px-4 py-2 bg-blue-500 text-white rounded-lg">Back to Login</button></div></div>
 
   // Get tasks for the task editor based on mode
-  const editorTasks = taskEditorMode === 'global' 
-    ? allTasks.filter(t => !t.customer_id)
-    : allTasks.filter(t => !t.customer_id || t.customer_id === taskEditorCustomer?.id)
+  // Tasks are global (no customer_id) - show all tasks
+  const editorTasks = allTasks
 
   return (
     <div className="min-h-screen bg-gray-50">
