@@ -1,34 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
-import { createClient as createServerClient } from '@supabase/ssr'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
-// Client-side singleton
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-})
-
-// Server-side client (for optional SSR)
-export const createClient = () => {
-  return createServerClient(supabaseUrl, supabaseAnonKey, {
-    cookies: {
-      get(name: string) {
-        return undefined
-      },
-      set(name: string, value: string, options: any) {
-        // SSR
-      },
-      remove(name: string, options: any) {
-        // SSR
-      },
-    },
-  })
-}
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // Types for our database
 export interface Customer {
@@ -55,6 +30,8 @@ export interface Task {
   sort_order: number
   is_success_gate: boolean
   unlocks_report: string | null
+  requires_upload?: boolean
+  template_files?: { name: string; url: string }[]
 }
 
 export interface CustomerProgress {
@@ -66,6 +43,10 @@ export interface CustomerProgress {
   notes: string | null
   file_url: string | null
   file_name: string | null
+  files: { name: string; url: string; uploaded_at: string }[] | null
+  verified: boolean
+  verified_at: string | null
+  verified_by: string | null
   updated_at: string
 }
 
@@ -77,6 +58,18 @@ export interface Report {
   key_metric: string | null
   report_url: string | null
   sort_order: number | null
+  unlocking_task_id: string | null
+}
+
+export interface TaskComment {
+  id: string
+  progress_id: string
+  customer_id: string
+  author_email: string
+  author_name: string | null
+  author_role: string
+  message: string
+  created_at: string
 }
 
 export interface TaskWithProgress extends Task {
