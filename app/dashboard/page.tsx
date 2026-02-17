@@ -43,6 +43,13 @@ interface ReportWithStatus extends Report {
   tasksCompleted: number
 }
 
+// Multi-report unlocks that span multiple tasks
+const MULTI_REPORT_UNLOCKS: Record<string, string[]> = {
+  'Confirm Tech Connections': ['Heartbeat Analytics', 'Sales by Hour', 'Labor by Hour'],
+  'First Audit': ['Consumption Details', 'Invoice Cost Details', 'Operations Statement'],
+  'Second Audit Count': ['Cost Summary by Ops Group', 'Actual vs Theoretical'],
+}
+
 export default function CustomerDashboard() {
   const router = useRouter()
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -143,24 +150,30 @@ export default function CustomerDashboard() {
       setPhases(phaseGroups.sort((a, b) => a.phase - b.phase))
 
       // Calculate report unlock status
-      const reportsWithStatus: ReportWithStatus[] = (reportsData || []).map(report => {
-        const unlockingTask = tasksWithProgress.find(t => t.unlocks_report === report.name)
-        const tasksInPhase = tasksWithProgress.filter(t => t.phase <= report.phase)
-        const completedInPhase = tasksInPhase.filter(t => t.progress?.completed).length
-        
-        // Report unlocks when the task that unlocks it is completed
-        const unlocked = unlockingTask ? unlockingTask.progress?.completed === true : false
-
-        return {
-          ...report,
-          unlocked,
-          unlocking_task: unlockingTask,
-          tasksToUnlock: unlockingTask ? 1 : 0,
-          tasksCompleted: unlocked ? 1 : 0
-        }
+    const reportsWithStatus: ReportWithStatus[] = (reportsData || []).map(report => {
+      // Check single report unlock from DB
+      const unlockingTask = tasksWithProgress.find(t => t.unlocks_report === report.name)
+      
+      // Check multi-report unlock from constant
+      const multiUnlockTask = tasksWithProgress.find(t => {
+        const multiReports = MULTI_REPORT_UNLOCKS[t.task_name]
+        return multiReports?.includes(report.name) && t.progress?.completed
       })
+      
+      // Report unlocks if: single unlock task completed OR multi-unlock task completed
+      const unlocked = (unlockingTask?.progress?.completed === true) || 
+                       (multiUnlockTask?.progress?.completed === true)
 
-      setReports(reportsWithStatus)
+      return {
+        ...report,
+        unlocked,
+        unlocking_task: unlockingTask || multiUnlockTask,
+        tasksToUnlock: unlockingTask ? 1 : 0,
+        tasksCompleted: unlocked ? 1 : 0
+      }
+    })
+
+    setReports(reportsWithStatus)
       setLoading(false)
     } catch (err) {
       setError(`Unexpected error: ${err}`)
