@@ -1,13 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { supabase, Customer, Task, CustomerProgress, Report } from '@/lib/supabase'
 import { 
   CheckCircle2, Circle, Clock, FileText, ChevronDown, ChevronUp, 
   LogOut, MessageSquare, Upload, Download, ExternalLink, Lock, 
-  Unlock, BookOpen, LayoutDashboard, Send, X, Check, AlertCircle
+  Unlock, BookOpen, LayoutDashboard, Send, X, Check, AlertCircle,
+  Calendar, Target, TrendingUp
 } from 'lucide-react'
 
 interface TaskComment {
@@ -24,8 +24,7 @@ interface TaskWithProgress extends Task {
   progress: CustomerProgress | null
   comments: TaskComment[]
   requires_upload?: boolean
-  template_files?: { name: string; url: string }[]
-  help_url?: string | null
+  customer_id?: string | null
 }
 
 interface PhaseGroup {
@@ -40,15 +39,6 @@ interface PhaseGroup {
 interface ReportWithStatus extends Report {
   unlocked: boolean
   unlocking_task?: Task
-  tasksToUnlock: number
-  tasksCompleted: number
-}
-
-// Multi-report unlocks that span multiple tasks
-const MULTI_REPORT_UNLOCKS: Record<string, string[]> = {
-  'Confirm Tech Connections': ['Heartbeat Analytics', 'Sales by Hour', 'Labor by Hour'],
-  'First Audit': ['Consumption Details', 'Invoice Cost Details', 'Operations Statement'],
-  'Second Audit Count': ['Cost Summary by Ops Group', 'Actual vs Theoretical'],
 }
 
 export default function CustomerDashboard() {
@@ -63,10 +53,43 @@ export default function CustomerDashboard() {
   const [commentingTask, setCommentingTask] = useState<string | null>(null)
   const [newComment, setNewComment] = useState('')
   const [uploadingTask, setUploadingTask] = useState<string | null>(null)
+  
+  const [estimatedDate, setEstimatedDate] = useState<Date | null>(null)
+  const [avgDaysPerTask, setAvgDaysPerTask] = useState<number | null>(null)
 
   useEffect(() => {
     loadData()
   }, [])
+
+  const calculateEstimatedCompletion = (progressData: CustomerProgress[], totalTasks: number) => {
+    const completedWithDates = progressData
+      .filter(p => p.completed && p.completed_at)
+      .sort((a, b) => new Date(a.completed_at!).getTime() - new Date(b.completed_at!).getTime())
+
+    if (completedWithDates.length < 2) return { estimatedDate: null, avgDays: null }
+
+    const firstDate = new Date(completedWithDates[0].completed_at!)
+    const lastDate = new Date(completedWithDates[completedWithDates.length - 1].completed_at!)
+    const totalDays = (lastDate.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24)
+    const tasksCompleted = completedWithDates.length - 1
+    
+    if (tasksCompleted === 0 || totalDays === 0) return { estimatedDate: null, avgDays: null }
+
+    const avgDays = totalDays / tasksCompleted
+    const remainingTasks = totalTasks - progressData.filter(p => p.completed).length
+    const estimated = new Date()
+    estimated.setDate(estimated.getDate() + remainingTasks * avgDays)
+
+    return { estimatedDate: estimated, avgDays: Math.round(avgDays * 10) / 10 }
+  }
+
+  const isReportUnlockedByTasks = (reportName: string, tasks: TaskWithProgress[]): Task | undefined => {
+    return tasks.find(task => {
+      if (!task.unlocks_report) return false
+      const unlockedReports = task.unlocks_report.split(',').map(r => r.trim())
+      return unlockedReports.includes(reportName) && task.progress?.completed
+    })
+  }
 
   const loadData = async () => {
     try {
@@ -77,7 +100,6 @@ export default function CustomerDashboard() {
         return
       }
 
-      // Get customer record
       const { data: customerData, error: customerError } = await supabase
         .from('customers')
         .select('*')
@@ -92,54 +114,62 @@ export default function CustomerDashboard() {
 
       setCustomer(customerData)
 
-      // Get all tasks
+      // Get tasks: global tasks (customer_id IS NULL) + customer-specific tasks
       const { data: tasksData } = await supabase
         .from('tasks')
         .select('*')
+        .or(`customer_id.is.null,customer_id.eq.${customerData.id}`)
         .order('sort_order')
 
-      // Get customer progress
       const { data: progressData } = await supabase
         .from('customer_progress')
         .select('*')
         .eq('customer_id', customerData.id)
 
-      // Get comments
       const { data: commentsData } = await supabase
         .from('task_comments')
         .select('*')
         .eq('customer_id', customerData.id)
         .order('created_at', { ascending: true })
 
-      // Get reports
       const { data: reportsData } = await supabase
         .from('reports')
         .select('*')
         .order('sort_order')
 
-      // Combine tasks with progress and comments
-      const tasksWithProgress: TaskWithProgress[] = (tasksData || []).map(task => ({
-        ...task,
-        progress: progressData?.find(p => p.task_id === task.id) || null,
-        comments: commentsData?.filter(c => {
+      // Filter out skipped tasks
+      const activeProgress = progressData?.filter(p => !p.is_skipped) || []
+      
+      // Build tasks with progress, excluding skipped ones
+      const tasksWithProgress: TaskWithProgress[] = (tasksData || [])
+        .map(task => {
           const progress = progressData?.find(p => p.task_id === task.id)
-          return progress && c.progress_id === progress.id
-        }) || []
-      }))
+          // Skip if marked as skipped
+          if (progress?.is_skipped) return null
+          
+          return {
+            ...task,
+            progress: progress || null,
+            comments: commentsData?.filter(c => progress && c.progress_id === progress.id) || []
+          }
+        })
+        .filter((t): t is TaskWithProgress => t !== null)
+
+      if (activeProgress && tasksWithProgress) {
+        const { estimatedDate: estDate, avgDays } = calculateEstimatedCompletion(
+          activeProgress.filter(p => !p.is_skipped), 
+          tasksWithProgress.length
+        )
+        setEstimatedDate(estDate)
+        setAvgDaysPerTask(avgDays)
+      }
 
       // Group by phase
       const phaseGroups: PhaseGroup[] = []
       tasksWithProgress.forEach(task => {
         let group = phaseGroups.find(g => g.phase === task.phase)
         if (!group) {
-          group = {
-            phase: task.phase,
-            phase_name: task.phase_name,
-            tasks: [],
-            completed: 0,
-            verified: 0,
-            total: 0
-          }
+          group = { phase: task.phase, phase_name: task.phase_name, tasks: [], completed: 0, verified: 0, total: 0 }
           phaseGroups.push(group)
         }
         group.tasks.push(task)
@@ -150,31 +180,17 @@ export default function CustomerDashboard() {
 
       setPhases(phaseGroups.sort((a, b) => a.phase - b.phase))
 
-      // Calculate report unlock status
-    const reportsWithStatus: ReportWithStatus[] = (reportsData || []).map(report => {
-      // Check single report unlock from DB
-      const unlockingTask = tasksWithProgress.find(t => t.unlocks_report === report.name)
-      
-      // Check multi-report unlock from constant
-      const multiUnlockTask = tasksWithProgress.find(t => {
-        const multiReports = MULTI_REPORT_UNLOCKS[t.task_name]
-        return multiReports?.includes(report.name) && t.progress?.completed
+      // Reports
+      const reportsWithStatus: ReportWithStatus[] = (reportsData || []).map(report => {
+        const unlockingTask = isReportUnlockedByTasks(report.name, tasksWithProgress)
+        const potentialUnlockingTask = tasksWithProgress.find(task => {
+          if (!task.unlocks_report) return false
+          return task.unlocks_report.split(',').map(r => r.trim()).includes(report.name)
+        })
+        return { ...report, unlocked: !!unlockingTask, unlocking_task: potentialUnlockingTask }
       })
-      
-      // Report unlocks if: single unlock task completed OR multi-unlock task completed
-      const unlocked = (unlockingTask?.progress?.completed === true) || 
-                       (multiUnlockTask?.progress?.completed === true)
 
-      return {
-        ...report,
-        unlocked,
-        unlocking_task: unlockingTask || multiUnlockTask,
-        tasksToUnlock: unlockingTask ? 1 : 0,
-        tasksCompleted: unlocked ? 1 : 0
-      }
-    })
-
-    setReports(reportsWithStatus)
+      setReports(reportsWithStatus)
       setLoading(false)
     } catch (err) {
       setError(`Unexpected error: ${err}`)
@@ -186,24 +202,19 @@ export default function CustomerDashboard() {
     if (!customer) return
     setUpdatingTask(taskId)
 
-    const newCompleted = !currentCompleted
-    
-    const { error } = await supabase
+    await supabase
       .from('customer_progress')
       .update({
-        completed: newCompleted,
-        completed_at: newCompleted ? new Date().toISOString() : null,
-        // Reset verification if unchecking
-        verified: newCompleted ? false : false,
+        completed: !currentCompleted,
+        completed_at: !currentCompleted ? new Date().toISOString() : null,
+        verified: false,
         verified_at: null,
         verified_by: null
       })
       .eq('customer_id', customer.id)
       .eq('task_id', taskId)
 
-    if (!error) {
-      await loadData()
-    }
+    await loadData()
     setUpdatingTask(null)
   }
 
@@ -213,22 +224,18 @@ export default function CustomerDashboard() {
     const progress = phases.flatMap(p => p.tasks).find(t => t.id === taskId)?.progress
     if (!progress) return
 
-    const { error } = await supabase
-      .from('task_comments')
-      .insert({
-        progress_id: progress.id,
-        customer_id: customer.id,
-        author_email: customer.email,
-        author_name: customer.name,
-        author_role: 'customer',
-        message: newComment.trim()
-      })
+    await supabase.from('task_comments').insert({
+      progress_id: progress.id,
+      customer_id: customer.id,
+      author_email: customer.email,
+      author_name: customer.name,
+      author_role: 'customer',
+      message: newComment.trim()
+    })
 
-    if (!error) {
-      setNewComment('')
-      setCommentingTask(null)
-      await loadData()
-    }
+    setNewComment('')
+    setCommentingTask(null)
+    await loadData()
   }
 
   const handleFileUpload = async (taskId: string, files: FileList) => {
@@ -239,39 +246,17 @@ export default function CustomerDashboard() {
     if (!progress) return
 
     const uploadedFiles = []
-
     for (const file of Array.from(files)) {
       const fileName = `${customer.id}/${taskId}/${Date.now()}-${file.name}`
-      
-      const { data, error } = await supabase.storage
-        .from('customer-files')
-        .upload(fileName, file)
-
+      const { data, error } = await supabase.storage.from('customer-files').upload(fileName, file)
       if (!error && data) {
-        const { data: urlData } = supabase.storage
-          .from('customer-files')
-          .getPublicUrl(fileName)
-        
-        uploadedFiles.push({
-          name: file.name,
-          url: urlData.publicUrl,
-          uploaded_at: new Date().toISOString()
-        })
+        const { data: urlData } = supabase.storage.from('customer-files').getPublicUrl(fileName)
+        uploadedFiles.push({ name: file.name, url: urlData.publicUrl, uploaded_at: new Date().toISOString() })
       }
     }
 
-    // Update progress with new files
-    const existingFiles = progress.files || []
-    const { error: updateError } = await supabase
-      .from('customer_progress')
-      .update({
-        files: [...existingFiles, ...uploadedFiles]
-      })
-      .eq('id', progress.id)
-
-    if (!updateError) {
-      await loadData()
-    }
+    await supabase.from('customer_progress').update({ files: [...(progress.files || []), ...uploadedFiles] }).eq('id', progress.id)
+    await loadData()
     setUploadingTask(null)
   }
 
@@ -281,30 +266,28 @@ export default function CustomerDashboard() {
   }
 
   const togglePhase = (phase: number) => {
-    setExpandedPhases(prev =>
-      prev.includes(phase) ? prev.filter(p => p !== phase) : [...prev, phase]
-    )
+    setExpandedPhases(prev => prev.includes(phase) ? prev.filter(p => p !== phase) : [...prev, phase])
   }
 
   const getPhaseColor = (phase: number) => {
-    const colors: Record<number, string> = {
-      0: 'bg-gray-500',
-      1: 'bg-blue-500',
-      2: 'bg-orange-500',
-      3: 'bg-green-500',
-      4: 'bg-indigo-900'
-    }
+    const colors: Record<number, string> = { 0: 'bg-gray-500', 1: 'bg-blue-500', 2: 'bg-orange-500', 3: 'bg-green-500', 4: 'bg-indigo-900' }
     return colors[phase] || 'bg-gray-500'
+  }
+
+  const getUnlockedReports = (task: Task): string[] => {
+    if (!task.unlocks_report) return []
+    return task.unlocks_report.split(',').map(r => r.trim()).filter(r => r)
   }
 
   const totalCompleted = phases.reduce((acc, p) => acc + p.completed, 0)
   const totalVerified = phases.reduce((acc, p) => acc + p.verified, 0)
   const totalTasks = phases.reduce((acc, p) => acc + p.total, 0)
   const overallProgress = totalTasks > 0 ? Math.round((totalCompleted / totalTasks) * 100) : 0
-
-  // Find next report to unlock
   const nextReport = reports.find(r => !r.unlocked)
   const unlockedCount = reports.filter(r => r.unlocked).length
+  const daysUntil = estimatedDate ? Math.ceil((estimatedDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : null
+
+  const formatEstimatedDate = (date: Date) => date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
 
   if (loading) {
     return (
@@ -324,9 +307,7 @@ export default function CustomerDashboard() {
           <div className="text-red-500 text-5xl mb-4">⚠️</div>
           <h2 className="text-xl font-bold text-gray-900 mb-2">Dashboard Error</h2>
           <p className="text-gray-600 mb-4">{error}</p>
-          <button onClick={() => router.push('/')} className="px-4 py-2 bg-blue-500 text-white rounded-lg">
-            Back to Login
-          </button>
+          <button onClick={() => router.push('/')} className="px-4 py-2 bg-blue-500 text-white rounded-lg">Back to Login</button>
         </div>
       </div>
     )
@@ -334,407 +315,238 @@ export default function CustomerDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div>
-              <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#1e3a5f] to-[#2d5a87] flex items-center justify-center">
-                <span className="text-white font-bold text-sm">C</span>
-              </div>
-              <span className="text-2xl font-bold text-[#1e3a5f] tracking-tight">craftable</span>
-            </div>
+              <h1 className="text-2xl font-bold text-gray-800">craftable</h1>
               <p className="text-sm text-gray-500">Onboarding Portal</p>
             </div>
-            
-            {/* Quick Links */}
             <div className="flex items-center gap-3">
-              <a
-                href="https://app.craftable.com/signin"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-all"
-              >
-                <LayoutDashboard size={16} />
-                Craftable App
+              <a href="https://app.craftable.com/signin" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+                <LayoutDashboard size={16} />Craftable App
               </a>
-              <a
-                href="https://help.craftable.com/learning"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-all"
-              >
-                <BookOpen size={16} />
-                Learning Center
+              <a href="https://help.craftable.com/learning" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+                <BookOpen size={16} />Learning Center
               </a>
             </div>
-
             <div className="flex items-center gap-4">
               <div className="text-right">
                 <p className="font-medium text-gray-900">{customer?.name}</p>
                 <p className="text-sm text-gray-500">{customer?.email}</p>
               </div>
-              <button
-                onClick={handleSignOut}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-all"
-              >
-                <LogOut size={20} />
-              </button>
+              <button onClick={handleSignOut} className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg"><LogOut size={20} /></button>
             </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Overall Progress */}
-        <div className="bg-white rounded-xl shadow-sm border p-6 mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900">Your Onboarding Progress</h2>
-              <p className="text-sm text-gray-500 mt-1">
-                {totalCompleted} tasks completed • {totalVerified} verified by your OM
-              </p>
-            </div>
-            <div className="text-right">
-              <span className="text-3xl font-bold text-blue-500">{overallProgress}%</span>
-              <p className="text-sm text-gray-500">{unlockedCount} of {reports.length} reports unlocked</p>
-            </div>
-          </div>
-          <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500 rounded-full"
-              style={{ width: `${overallProgress}%` }}
-            />
-          </div>
-          
-          {/* Next Report Teaser */}
-          {nextReport && (
-            <div className="mt-4 p-3 bg-blue-50 rounded-lg flex items-center gap-3">
-              <Lock className="text-blue-500" size={20} />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-blue-900">
-                  Next unlock: <strong>{nextReport.name}</strong>
-                </p>
-                <p className="text-xs text-blue-700">
-                  Complete "{nextReport.unlocking_task?.task_name}" to unlock
-                </p>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+          <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Your Onboarding Progress</h2>
+                <p className="text-sm text-gray-500 mt-1">{totalCompleted} tasks completed • {totalVerified} verified by your OM</p>
+              </div>
+              <div className="text-right">
+                <span className="text-3xl font-bold text-blue-500">{overallProgress}%</span>
+                <p className="text-sm text-gray-500">{unlockedCount} of {reports.length} reports unlocked</p>
               </div>
             </div>
-          )}
+            <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500 rounded-full" style={{ width: `${overallProgress}%` }} />
+            </div>
+            {nextReport && (
+              <div className="mt-4 p-3 bg-blue-50 rounded-lg flex items-center gap-3">
+                <Lock className="text-blue-500" size={20} />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-blue-900">Next unlock: <strong>{nextReport.name}</strong></p>
+                  <p className="text-xs text-blue-700">Complete "{nextReport.unlocking_task?.task_name}" to unlock</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl shadow-sm p-6 text-white">
+            <div className="flex items-center gap-2 mb-3">
+              <Target size={20} />
+              <h3 className="font-semibold">Estimated Completion</h3>
+            </div>
+            {overallProgress === 100 ? (
+              <div className="text-center py-4">
+                <div className="text-4xl mb-2">🎉</div>
+                <p className="text-xl font-bold">All Done!</p>
+                <p className="text-sm text-indigo-200">Congratulations on completing onboarding!</p>
+              </div>
+            ) : estimatedDate && daysUntil !== null ? (
+              <>
+                <p className="text-3xl font-bold mb-1">{formatEstimatedDate(estimatedDate)}</p>
+                <p className="text-indigo-200 text-sm mb-4">{daysUntil <= 0 ? "You're on track to finish today!" : `${daysUntil} days from now`}</p>
+                <div className="bg-white/20 rounded-lg p-3">
+                  <div className="flex items-center gap-2 text-sm"><TrendingUp size={16} /><span>Your pace: ~{avgDaysPerTask} days per task</span></div>
+                  <p className="text-xs text-indigo-200 mt-1">{totalTasks - totalCompleted} tasks remaining</p>
+                </div>
+              </>
+            ) : (
+              <div className="text-center py-4">
+                <Calendar size={32} className="mx-auto mb-2 text-indigo-200" />
+                <p className="text-sm text-indigo-200">Complete a few more tasks to see your estimated completion date</p>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Tasks Column */}
           <div className="lg:col-span-2 space-y-4">
             {phases.map((phase) => (
               <div key={phase.phase} className="bg-white rounded-lg shadow-sm border overflow-hidden">
-                <button
-                  onClick={() => togglePhase(phase.phase)}
-                  className={`w-full px-4 py-3 flex items-center justify-between text-white ${getPhaseColor(phase.phase)}`}
-                >
+                <button onClick={() => togglePhase(phase.phase)} className={`w-full px-4 py-3 flex items-center justify-between text-white ${getPhaseColor(phase.phase)}`}>
                   <span className="font-semibold">{phase.phase_name}</span>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm opacity-90">
-                      {phase.completed}/{phase.total} done • {phase.verified} verified
-                    </span>
+                    <span className="text-sm opacity-90">{phase.completed}/{phase.total} done • {phase.verified} verified</span>
                     {expandedPhases.includes(phase.phase) ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
                   </div>
                 </button>
 
                 {expandedPhases.includes(phase.phase) && (
                   <div className="divide-y divide-gray-100">
-                    {phase.tasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className={`p-4 transition-all ${
-                          task.progress?.verified 
-                            ? 'bg-green-50' 
-                            : task.progress?.completed 
-                              ? 'bg-yellow-50' 
-                              : 'hover:bg-gray-50'
-                        }`}
-                      >
-                        <div className="flex items-start gap-3">
-                          <button
-                            onClick={() => toggleTask(task.id, task.progress?.completed || false)}
-                            disabled={updatingTask === task.id}
-                            className="mt-0.5 flex-shrink-0"
-                          >
-                            {updatingTask === task.id ? (
-                              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                            ) : task.progress?.verified ? (
-                              <CheckCircle2 className="w-5 h-5 text-green-600" />
-                            ) : task.progress?.completed ? (
-                              <AlertCircle className="w-5 h-5 text-yellow-500" />
-                            ) : (
-                              <Circle className="w-5 h-5 text-gray-300 hover:text-blue-500 transition-colors" />
-                            )}
-                          </button>
+                    {phase.tasks.map((task) => {
+                      const unlockedReports = getUnlockedReports(task)
+                      const isCustomTask = !!task.customer_id
+                      
+                      return (
+                        <div key={task.id} className={`p-4 transition-all ${task.progress?.verified ? 'bg-green-50' : task.progress?.completed ? 'bg-yellow-50' : 'hover:bg-gray-50'}`}>
+                          <div className="flex items-start gap-3">
+                            <button onClick={() => toggleTask(task.id, task.progress?.completed || false)} disabled={updatingTask === task.id} className="mt-0.5 flex-shrink-0">
+                              {updatingTask === task.id ? (
+                                <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                              ) : task.progress?.verified ? (
+                                <CheckCircle2 className="w-5 h-5 text-green-600" />
+                              ) : task.progress?.completed ? (
+                                <AlertCircle className="w-5 h-5 text-yellow-500" />
+                              ) : (
+                                <Circle className="w-5 h-5 text-gray-300 hover:text-blue-500 transition-colors" />
+                              )}
+                            </button>
 
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className={`font-medium ${
-                                task.progress?.verified 
-                                  ? 'text-green-700' 
-                                  : task.progress?.completed 
-                                    ? 'text-yellow-700' 
-                                    : 'text-gray-900'
-                              }`}>
-                                {task.task_name}
-                              </h3>
-                              {task.is_success_gate && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-green-500 text-white rounded-full">
-                                  Success Gate
-                                </span>
-                              )}
-                              {task.progress?.completed && !task.progress?.verified && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 rounded-full">
-                                  Awaiting OM Verification
-                                </span>
-                              )}
-                              {task.progress?.verified && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full flex items-center gap-1">
-                                  <Check size={12} /> Verified
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-sm text-gray-500 mt-1">{task.description}</p>
-                          
-                          {task.help_url && (
-                            <a 
-                              href={task.help_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 mt-1 group"
-                            >
-                              <BookOpen size={12} className="group-hover:scale-110 transition-transform" />
-                              <span className="border-b border-transparent group-hover:border-blue-600 transition-colors">
-                                Learning Center
-                              </span>
-                              <ExternalLink size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
-                            </a>
-                          )}
-                            
-                            <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                              <span className="flex items-center gap-1">
-                                <Clock size={12} />
-                                {task.est_time}
-                              </span>
-                              <span>Owner: {task.owner}</span>
-                              {task.unlocks_report && (
-                                <span className="flex items-center gap-1 text-blue-500">
-                                  <Unlock size={12} />
-                                  Unlocks: {task.unlocks_report}
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Timestamps */}
-                            {task.progress?.completed_at && (
-                              <div className="mt-2 text-xs text-gray-400">
-                                Completed: {new Date(task.progress.completed_at).toLocaleString()}
-                                {task.progress.verified_at && (
-                                  <span className="ml-3">
-                                    • Verified: {new Date(task.progress.verified_at).toLocaleString()} by {task.progress.verified_by}
-                                  </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className={`font-medium ${task.progress?.verified ? 'text-green-700' : task.progress?.completed ? 'text-yellow-700' : 'text-gray-900'}`}>
+                                  {task.task_name}
+                                </h3>
+                                {isCustomTask && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">Custom</span>
+                                )}
+                                {task.is_success_gate && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-green-500 text-white rounded-full">Success Gate</span>
+                                )}
+                                {task.progress?.completed && !task.progress?.verified && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 rounded-full">Awaiting OM Verification</span>
+                                )}
+                                {task.progress?.verified && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full flex items-center gap-1"><Check size={12} /> Verified</span>
                                 )}
                               </div>
-                            )}
+                              <p className="text-sm text-gray-500 mt-1">{task.description}</p>
+                              
+                              <div className="flex items-center gap-4 mt-2 text-xs text-gray-400 flex-wrap">
+                                <span className="flex items-center gap-1"><Clock size={12} />{task.est_time}</span>
+                                <span>Owner: {task.owner}</span>
+                                {unlockedReports.length > 0 && (
+                                  <span className="flex items-center gap-1 text-blue-500"><Unlock size={12} />Unlocks: {unlockedReports.join(', ')}</span>
+                                )}
+                              </div>
 
-                            {/* File Upload Section for Phase 0 tasks */}
-                            {task.requires_upload && (
-                              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                                <p className="text-xs font-medium text-gray-600 mb-2">📎 File Upload Required</p>
-                                
-                        {/* Download Templates */}
-                        <div className="flex flex-wrap gap-2 mb-2">
-                          {task.task_name === 'Complete Preflight Checklist' ? (
-                            <>
-                              <a href="/templates/key-contacts.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
-                                <Download size={12} /> Key Contacts (Required)
-                              </a>
-                              <a href="/templates/vendor-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
-                                <Download size={12} /> Vendor Loader (Required)
-                              </a>
-                              <a href="/templates/category-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
-                                <Download size={12} /> Category Loader (Required)
-                              </a>
-                              <a href="/templates/item-loader-food.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">
-                                <Download size={12} /> Item Loader - Food (Optional)
-                              </a>
-                              <a href="/templates/item-loader-bev.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">
-                                <Download size={12} /> Item Loader - Bev (Optional)
-                              </a>
-                            </>
-                          ) : task.task_name === 'Gather 60-90 Days of Invoices' ? (
-                            <p className="text-xs text-gray-500 italic">Upload your scanned invoices directly</p>
-                          ) : null}
-                        </div>
+                              {task.progress?.completed_at && (
+                                <div className="mt-2 text-xs text-gray-400">
+                                  Completed: {new Date(task.progress.completed_at).toLocaleString()}
+                                  {task.progress.verified_at && <span className="ml-3">• Verified: {new Date(task.progress.verified_at).toLocaleString()} by {task.progress.verified_by}</span>}
+                                </div>
+                              )}
 
-                                {/* Upload Button */}
-                                <label className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-all">
-                                  <Upload size={16} className="text-gray-500" />
-                                  <span className="text-gray-600">
-                                    {uploadingTask === task.id ? 'Uploading...' : 'Upload completed files'}
-                                  </span>
-                                  <input
-                                    type="file"
-                                    multiple
-                                    className="hidden"
-                                    onChange={(e) => e.target.files && handleFileUpload(task.id, e.target.files)}
-                                    disabled={uploadingTask === task.id}
-                                  />
-                                </label>
+                              {task.requires_upload && (
+                                <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                                  <p className="text-xs font-medium text-gray-600 mb-2">📎 File Upload Required</p>
+                                  <div className="flex gap-2 mb-2 flex-wrap">
+                                    <a href="/templates/vendor-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"><Download size={12} /> Vendor Loader (Required)</a>
+                                    <a href="/templates/category-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"><Download size={12} /> Category Loader (Required)</a>
+                                    <a href="/templates/item-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"><Download size={12} /> Item Loader (Optional)</a>
+                                  </div>
+                                  <label className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-all">
+                                    <Upload size={16} className="text-gray-500" />
+                                    <span className="text-gray-600">{uploadingTask === task.id ? 'Uploading...' : 'Upload completed files'}</span>
+                                    <input type="file" multiple className="hidden" onChange={(e) => e.target.files && handleFileUpload(task.id, e.target.files)} disabled={uploadingTask === task.id} />
+                                  </label>
+                                  {task.progress?.files && (task.progress.files as any[]).length > 0 && (
+                                    <div className="mt-2 space-y-1">
+                                      {(task.progress.files as any[]).map((file, idx) => (
+                                        <div key={idx} className="flex items-center gap-2 text-xs text-gray-600"><FileText size={12} /><span>{file.name}</span><CheckCircle2 size={12} className="text-green-500" /></div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
 
-                                {/* Uploaded Files */}
-                                {task.progress?.files && task.progress.files.length > 0 && (
-                                  <div className="mt-2 space-y-1">
-                                    {(task.progress.files as any[]).map((file, idx) => (
-                                      <div key={idx} className="flex items-center gap-2 text-xs text-gray-600">
-                                        <FileText size={12} />
-                                        <span>{file.name}</span>
-                                        <CheckCircle2 size={12} className="text-green-500" />
+                              <div className="mt-3">
+                                {task.comments.length > 0 && (
+                                  <div className="space-y-2 mb-2">
+                                    {task.comments.map((comment) => (
+                                      <div key={comment.id} className={`p-2 rounded-lg text-sm ${comment.author_role === 'customer' ? 'bg-gray-100 ml-0 mr-8' : 'bg-blue-50 ml-8 mr-0'}`}>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <span className="font-medium text-xs">{comment.author_name || comment.author_email}</span>
+                                          <span className={`text-xs px-1.5 py-0.5 rounded ${comment.author_role === 'om' ? 'bg-blue-200 text-blue-800' : comment.author_role === 'admin' ? 'bg-purple-200 text-purple-800' : 'bg-gray-200 text-gray-600'}`}>{comment.author_role}</span>
+                                          <span className="text-xs text-gray-400">{new Date(comment.created_at).toLocaleString()}</span>
+                                        </div>
+                                        <p className="text-gray-700">{comment.message}</p>
                                       </div>
                                     ))}
                                   </div>
                                 )}
+                                {commentingTask === task.id ? (
+                                  <div className="flex gap-2">
+                                    <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Add a note or question..." className="flex-1 text-sm p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500" onKeyDown={(e) => e.key === 'Enter' && addComment(task.id)} />
+                                    <button onClick={() => addComment(task.id)} className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"><Send size={16} /></button>
+                                    <button onClick={() => { setCommentingTask(null); setNewComment(''); }} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"><X size={16} /></button>
+                                  </div>
+                                ) : (
+                                  <button onClick={() => setCommentingTask(task.id)} className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-500">
+                                    <MessageSquare size={12} />{task.comments.length > 0 ? `${task.comments.length} notes` : 'Add note'}
+                                  </button>
+                                )}
                               </div>
-                            )}
-
-                            {/* Comments Section */}
-                            <div className="mt-3">
-                              {task.comments.length > 0 && (
-                                <div className="space-y-2 mb-2">
-                                  {task.comments.map((comment) => (
-                                    <div
-                                      key={comment.id}
-                                      className={`p-2 rounded-lg text-sm ${
-                                        comment.author_role === 'customer'
-                                          ? 'bg-gray-100 ml-0 mr-8'
-                                          : 'bg-blue-50 ml-8 mr-0'
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-medium text-xs">
-                                          {comment.author_name || comment.author_email}
-                                        </span>
-                                        <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                          comment.author_role === 'om' 
-                                            ? 'bg-blue-200 text-blue-800' 
-                                            : comment.author_role === 'admin'
-                                              ? 'bg-purple-200 text-purple-800'
-                                              : 'bg-gray-200 text-gray-600'
-                                        }`}>
-                                          {comment.author_role}
-                                        </span>
-                                        <span className="text-xs text-gray-400">
-                                          {new Date(comment.created_at).toLocaleString()}
-                                        </span>
-                                      </div>
-                                      <p className="text-gray-700">{comment.message}</p>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-
-                              {commentingTask === task.id ? (
-                                <div className="flex gap-2">
-                                  <input
-                                    type="text"
-                                    value={newComment}
-                                    onChange={(e) => setNewComment(e.target.value)}
-                                    placeholder="Add a note or question..."
-                                    className="flex-1 text-sm p-2 border border-gray-200 rounded-lg focus:ring-1 focus:ring-blue-500"
-                                    onKeyDown={(e) => e.key === 'Enter' && addComment(task.id)}
-                                  />
-                                  <button
-                                    onClick={() => addComment(task.id)}
-                                    className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-                                  >
-                                    <Send size={16} />
-                                  </button>
-                                  <button
-                                    onClick={() => { setCommentingTask(null); setNewComment(''); }}
-                                    className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
-                                  >
-                                    <X size={16} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => setCommentingTask(task.id)}
-                                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-500"
-                                >
-                                  <MessageSquare size={12} />
-                                  {task.comments.length > 0 ? `${task.comments.length} notes` : 'Add note'}
-                                </button>
-                              )}
                             </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </div>
             ))}
           </div>
 
-          {/* Sidebar */}
           <div className="space-y-6">
-            {/* Reports Unlock Progress */}
             <div className="bg-white rounded-xl shadow-sm border p-6">
-              <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <FileText size={18} />
-                Report Unlocks
-              </h3>
+              <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2"><FileText size={18} />Report Unlocks</h3>
               <div className="space-y-3">
                 {reports.map((report) => (
-                  <div
-                    key={report.id}
-                    className={`p-3 rounded-lg border transition-all ${
-                      report.unlocked
-                        ? 'bg-green-50 border-green-200'
-                        : 'bg-gray-50 border-gray-200'
-                    }`}
-                  >
+                  <div key={report.id} className={`p-3 rounded-lg border transition-all ${report.unlocked ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
                     <div className="flex items-center gap-2">
-                      {report.unlocked ? (
-                        <Unlock className="w-4 h-4 text-green-600 flex-shrink-0" />
-                      ) : (
-                        <Lock className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                      )}
-                      <span className={`text-sm font-medium ${
-                        report.unlocked ? 'text-green-700' : 'text-gray-500'
-                      }`}>
-                        {report.name}
-                      </span>
+                      {report.unlocked ? <Unlock className="w-4 h-4 text-green-600 flex-shrink-0" /> : <Lock className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+                      <span className={`text-sm font-medium ${report.unlocked ? 'text-green-700' : 'text-gray-500'}`}>{report.name}</span>
                     </div>
-                    
                     {report.unlocked && report.report_url && (
-                      <a
-                        href={report.report_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-2 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-                      >
-                        <ExternalLink size={12} />
-                        Learn about this report
-                      </a>
+                      <a href={report.report_url} target="_blank" rel="noopener noreferrer" className="mt-2 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"><ExternalLink size={12} />Learn about this report</a>
                     )}
-                    
                     {!report.unlocked && report.unlocking_task && (
-                      <p className="mt-1 text-xs text-gray-400">
-                        Complete: {report.unlocking_task.task_name}
-                      </p>
+                      <p className="mt-1 text-xs text-gray-400">Complete: {report.unlocking_task.task_name}</p>
                     )}
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Phase Progress Summary */}
             <div className="bg-white rounded-xl shadow-sm border p-6">
               <h3 className="font-semibold text-gray-900 mb-4">Phase Progress</h3>
               <div className="space-y-3">
@@ -743,30 +555,17 @@ export default function CustomerDashboard() {
                     <div className={`w-2 h-2 rounded-full ${getPhaseColor(phase.phase)}`} />
                     <span className="flex-1 text-sm text-gray-600">Phase {phase.phase}</span>
                     <span className="text-sm font-medium">{phase.completed}/{phase.total}</span>
-                    {phase.completed === phase.total && phase.total > 0 && (
-                      <CheckCircle2 className="w-4 h-4 text-green-500" />
-                    )}
+                    {phase.completed === phase.total && phase.total > 0 && <CheckCircle2 className="w-4 h-4 text-green-500" />}
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Contact */}
             <div className="bg-indigo-900 rounded-xl p-6 text-white">
               <h3 className="font-semibold mb-2">Need Help?</h3>
-              <p className="text-sm text-blue-100 mb-4">
-                Your Onboarding Manager is here to help.
-              </p>
-              <p className="text-sm">
-                <span className="text-blue-200">Assigned OM:</span>{' '}
-                {customer?.assigned_om}
-              </p>
-              <a
-                href="mailto:support@craftable.com"
-                className="mt-4 block w-full text-center py-2 bg-white text-indigo-900 rounded-lg font-medium hover:bg-gray-100 transition-all"
-              >
-                Contact Support
-              </a>
+              <p className="text-sm text-blue-100 mb-4">Your Onboarding Manager is here to help.</p>
+              <p className="text-sm"><span className="text-blue-200">Assigned OM:</span> {customer?.assigned_om}</p>
+              <a href="mailto:support@craftable.com" className="mt-4 block w-full text-center py-2 bg-white text-indigo-900 rounded-lg font-medium hover:bg-gray-100 transition-all">Contact Support</a>
             </div>
           </div>
         </div>
