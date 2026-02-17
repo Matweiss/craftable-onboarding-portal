@@ -512,27 +512,30 @@ export default function CustomerDashboard() {
                               <div className="mt-3 p-3 bg-gray-50 rounded-lg">
                                 <p className="text-xs font-medium text-gray-600 mb-2">📎 File Upload Required</p>
                                 
-                                {/* Download Templates */}
-                                <div className="flex gap-2 mb-2">
-                                  <a
-                                    href="/templates/vendor-loader.xlsx"
-                                    className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
-                                  >
-                                    <Download size={12} /> Vendor Loader (Required)
-                                  </a>
-                                  <a
-                                    href="/templates/category-loader.xlsx"
-                                    className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
-                                  >
-                                    <Download size={12} /> Category Loader (Required)
-                                  </a>
-                                  <a
-                                    href="/templates/item-loader.xlsx"
-                                    className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
-                                  >
-                                    <Download size={12} /> Item Loader (Optional)
-                                  </a>
-                                </div>
+                        {/* Download Templates */}
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {task.task_name === 'Complete Preflight Checklist' ? (
+                            <>
+                              <a href="/templates/key-contacts.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                                <Download size={12} /> Key Contacts (Required)
+                              </a>
+                              <a href="/templates/vendor-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                                <Download size={12} /> Vendor Loader (Required)
+                              </a>
+                              <a href="/templates/category-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                                <Download size={12} /> Category Loader (Required)
+                              </a>
+                              <a href="/templates/item-loader-food.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">
+                                <Download size={12} /> Item Loader - Food (Optional)
+                              </a>
+                              <a href="/templates/item-loader-bev.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">
+                                <Download size={12} /> Item Loader - Bev (Optional)
+                              </a>
+                            </>
+                          ) : task.task_name === 'Gather 60-90 Days of Invoices' ? (
+                            <p className="text-xs text-gray-500 italic">Upload your scanned invoices directly</p>
+                          ) : null}
+                        </div>
 
                                 {/* Upload Button */}
                                 <label className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-all">
