@@ -20,9 +20,21 @@ interface TaskComment {
   created_at: string
 }
 
+interface TaskFile {
+  id: string
+  task_id: string
+  name: string
+  description: string | null
+  url: string
+  file_type: string
+  is_optional: boolean
+  sort_order: number
+}
+
 interface TaskWithProgress extends Task {
   progress: CustomerProgress | null
   comments: TaskComment[]
+  files: TaskFile[]
   customer_id?: string | null
   has_unread_reply?: boolean
 }
@@ -98,6 +110,7 @@ export default function CustomerDashboard() {
       const { data: progressData } = await supabase.from('customer_progress').select('*').eq('customer_id', customerData.id)
       const { data: commentsData } = await supabase.from('task_comments').select('*').eq('customer_id', customerData.id).order('created_at', { ascending: true })
       const { data: reportsData } = await supabase.from('reports').select('*').order('sort_order')
+      const { data: taskFilesData } = await supabase.from('task_files').select('*').order('sort_order')
 
       // Count unread replies
       const unreadCount = (progressData || []).filter(p => p.has_unread_reply).length
@@ -108,11 +121,15 @@ export default function CustomerDashboard() {
       const tasksWithProgress: TaskWithProgress[] = (tasksData || []).map(task => {
         const progress = progressData?.find(p => p.task_id === task.id)
         if (progress?.is_skipped) return null
-        // Don't filter by hidden phases here - we'll filter at the phase level
+        
+        // Get files for this task from the database
+        const files = (taskFilesData || []).filter(f => f.task_id === task.id)
+        
         return {
           ...task,
           progress: progress || null,
           comments: commentsData?.filter(c => progress && c.progress_id === progress.id) || [],
+          files: files,
           has_unread_reply: progress?.has_unread_reply || false
         }
       }).filter((t): t is TaskWithProgress => t !== null)
@@ -179,13 +196,10 @@ export default function CustomerDashboard() {
   }
 
   const expandTaskWithUnread = (taskId: string, phase: number, progressId: string) => {
-    // Expand the phase if not already expanded
     if (!expandedPhases.includes(phase)) {
       setExpandedPhases(prev => [...prev, phase])
     }
-    // Set the commenting task to show the thread
     setCommentingTask(taskId)
-    // Mark as read
     markAsRead(progressId)
   }
 
@@ -251,9 +265,7 @@ export default function CustomerDashboard() {
         {unreadReplies > 0 && (
           <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-xl">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-full">
-                <Bell className="w-5 h-5 text-purple-600" />
-              </div>
+              <div className="p-2 bg-purple-100 rounded-full"><Bell className="w-5 h-5 text-purple-600" /></div>
               <div className="flex-1">
                 <p className="font-medium text-purple-900">You have {unreadReplies} new {unreadReplies === 1 ? 'reply' : 'replies'} from your Onboarding Manager</p>
                 <p className="text-sm text-purple-700">Click on a task below to view the message</p>
@@ -262,11 +274,8 @@ export default function CustomerDashboard() {
             {tasksWithUnread.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-2">
                 {tasksWithUnread.map(task => (
-                  <button
-                    key={task.id}
-                    onClick={() => task.progress && expandTaskWithUnread(task.id, task.phaseNum, task.progress.id)}
-                    className="px-3 py-1.5 text-sm bg-white border border-purple-200 rounded-lg hover:bg-purple-50 flex items-center gap-2"
-                  >
+                  <button key={task.id} onClick={() => task.progress && expandTaskWithUnread(task.id, task.phaseNum, task.progress.id)}
+                    className="px-3 py-1.5 text-sm bg-white border border-purple-200 rounded-lg hover:bg-purple-50 flex items-center gap-2">
                     <MessageSquare size={14} className="text-purple-500" />
                     <span className="text-purple-900">{task.task_name}</span>
                   </button>
@@ -325,6 +334,8 @@ export default function CustomerDashboard() {
                       const unlockedReports = getUnlockedReports(task)
                       const isCustomTask = !!task.customer_id
                       const hasUnread = task.has_unread_reply
+                      const downloadableFiles = task.files || []
+                      const customerUploads = task.progress?.files as any[] || []
                       
                       return (
                         <div key={task.id} className={`p-4 transition-all ${hasUnread ? 'bg-purple-50 border-l-4 border-purple-500' : task.progress?.verified ? 'bg-green-50' : task.progress?.completed ? 'bg-yellow-50' : 'hover:bg-gray-50'}`}>
@@ -336,11 +347,7 @@ export default function CustomerDashboard() {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <h3 className={`font-medium ${task.progress?.verified ? 'text-green-700' : task.progress?.completed ? 'text-yellow-700' : 'text-gray-900'}`}>{task.task_name}</h3>
-                                {hasUnread && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-purple-500 text-white rounded-full flex items-center gap-1">
-                                    <MessageSquare size={10} /> New Reply
-                                  </span>
-                                )}
+                                {hasUnread && <span className="px-2 py-0.5 text-xs font-medium bg-purple-500 text-white rounded-full flex items-center gap-1"><MessageSquare size={10} /> New Reply</span>}
                                 {isCustomTask && <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">Custom</span>}
                                 {task.is_success_gate && <span className="px-2 py-0.5 text-xs font-medium bg-green-500 text-white rounded-full">Success Gate</span>}
                                 {task.progress?.completed && !task.progress?.verified && <span className="px-2 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 rounded-full">Awaiting OM Verification</span>}
@@ -355,22 +362,61 @@ export default function CustomerDashboard() {
 
                               {task.progress?.completed_at && <div className="mt-2 text-xs text-gray-400">Completed: {new Date(task.progress.completed_at).toLocaleString()}{task.progress.verified_at && <span className="ml-3">• Verified: {new Date(task.progress.verified_at).toLocaleString()} by {task.progress.verified_by}</span>}</div>}
 
-                              {task.requires_upload && (
-                                <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                                  <p className="text-xs font-medium text-gray-600 mb-2">📎 File Upload Required</p>
-                                  <div className="flex gap-2 mb-2 flex-wrap">
-                                    <a href="/templates/vendor-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"><Download size={12} /> Vendor Loader</a>
-                                    <a href="/templates/category-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200"><Download size={12} /> Category Loader</a>
-                                    <a href="/templates/item-loader.xlsx" className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"><Download size={12} /> Item Loader (Optional)</a>
+                              {/* Downloadable files from admin (dynamic from task_files table) */}
+                              {downloadableFiles.length > 0 && (
+                                <div className="mt-3 p-3 bg-blue-50 rounded-lg">
+                                  <p className="text-xs font-medium text-blue-700 mb-2">📥 Download Templates</p>
+                                  <div className="flex gap-2 flex-wrap">
+                                    {downloadableFiles.map((file) => (
+                                      <a key={file.id} href={file.url} target="_blank" rel="noopener noreferrer"
+                                        className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                                          file.is_optional 
+                                            ? 'bg-gray-100 text-gray-600 hover:bg-gray-200' 
+                                            : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                        }`}>
+                                        <Download size={12} />
+                                        <span>{file.name}</span>
+                                        {file.is_optional && <span className="text-gray-400">(optional)</span>}
+                                      </a>
+                                    ))}
                                   </div>
-                                  <label className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-all">
-                                    <Upload size={16} className="text-gray-500" /><span className="text-gray-600">{uploadingTask === task.id ? 'Uploading...' : 'Upload completed files'}</span>
-                                    <input type="file" multiple className="hidden" onChange={(e) => e.target.files && handleFileUpload(task.id, e.target.files)} disabled={uploadingTask === task.id} />
-                                  </label>
-                                  {task.progress?.files && (task.progress.files as any[]).length > 0 && <div className="mt-2 space-y-1">{(task.progress.files as any[]).map((file, idx) => <div key={idx} className="flex items-center gap-2 text-xs text-gray-600"><FileText size={12} /><span>{file.name}</span><CheckCircle2 size={12} className="text-green-500" /></div>)}</div>}
+                                  {downloadableFiles.some(f => f.description) && (
+                                    <div className="mt-2 space-y-1">
+                                      {downloadableFiles.filter(f => f.description).map(f => (
+                                        <p key={f.id} className="text-xs text-blue-600">• {f.name}: {f.description}</p>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               )}
 
+                              {/* File upload section */}
+                              {task.requires_upload && (
+                                <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                                  <p className="text-xs font-medium text-gray-600 mb-2">📤 Upload Your Files</p>
+                                  <label className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-all">
+                                    <Upload size={16} className="text-gray-500" />
+                                    <span className="text-gray-600">{uploadingTask === task.id ? 'Uploading...' : 'Click to upload completed files'}</span>
+                                    <input type="file" multiple className="hidden" onChange={(e) => e.target.files && handleFileUpload(task.id, e.target.files)} disabled={uploadingTask === task.id} />
+                                  </label>
+                                  
+                                  {/* Show customer's uploaded files */}
+                                  {customerUploads.length > 0 && (
+                                    <div className="mt-2 space-y-1">
+                                      <p className="text-xs text-gray-500">Uploaded files:</p>
+                                      {customerUploads.map((file, idx) => (
+                                        <div key={idx} className="flex items-center gap-2 text-xs text-gray-600">
+                                          <FileText size={12} />
+                                          <span>{file.name}</span>
+                                          <CheckCircle2 size={12} className="text-green-500" />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Comments section */}
                               <div className="mt-3">
                                 {task.comments.length > 0 && (
                                   <div className="space-y-2 mb-2">
@@ -393,13 +439,8 @@ export default function CustomerDashboard() {
                                     <button onClick={() => { setCommentingTask(null); setNewComment(''); if (hasUnread && task.progress) markAsRead(task.progress.id); }} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"><X size={16} /></button>
                                   </div>
                                 ) : (
-                                  <button 
-                                    onClick={() => { 
-                                      setCommentingTask(task.id); 
-                                      if (hasUnread && task.progress) markAsRead(task.progress.id); 
-                                    }} 
-                                    className={`flex items-center gap-1 text-xs ${hasUnread ? 'text-purple-600 font-medium' : 'text-gray-500'} hover:text-blue-500`}
-                                  >
+                                  <button onClick={() => { setCommentingTask(task.id); if (hasUnread && task.progress) markAsRead(task.progress.id); }} 
+                                    className={`flex items-center gap-1 text-xs ${hasUnread ? 'text-purple-600 font-medium' : 'text-gray-500'} hover:text-blue-500`}>
                                     <MessageSquare size={12} />
                                     {hasUnread ? 'View reply & respond' : task.comments.length > 0 ? `${task.comments.length} notes` : 'Add note'}
                                   </button>
